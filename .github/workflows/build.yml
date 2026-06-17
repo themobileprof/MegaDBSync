@@ -11,17 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: windows
-            goarch: amd64
-            ext: .exe
-          - goos: linux
-            goarch: amd64
-            ext: ""
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -41,19 +31,13 @@ jobs:
 
       - name: Build binary
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: |
-          mkdir -p dist
-          go build -trimpath -ldflags="-s -w" \
-            -o "dist/mdas${{ matrix.ext }}" \
-            ./cmd/mdas
+        run: go build -trimpath -ldflags="-s -w" -o dist\mdas.exe .\cmd\mdas
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mdas-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/mdas${{ matrix.ext }}
+          name: mdas-windows-amd64
+          path: dist\mdas.exe
           if-no-files-found: error
           retention-days: 30
