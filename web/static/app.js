@@ -161,9 +161,11 @@ function renderDashboard(data) {
       </div>`).join('');
   }
 
-  renderConnections(data.connections || []);
+  if (data.connections && data.connections.length) {
+    renderConnections(data.connections);
+    fillJobSelects(data.connections);
+  }
   renderJobs(data.recent_jobs || []);
-  fillJobSelects(data.connections || []);
 }
 
 function renderConnections(list) {
@@ -180,7 +182,7 @@ function renderConnections(list) {
         <strong>${esc(c.name)}</strong>
         <span class="badge ${c.type === 'oracle' ? 'running' : 'completed'}">${c.type}</span>
       </div>
-      <div class="muted">${esc(c.host)}:${c.port || '—'} · ${esc(c.database || '—')}</div>
+      <div class="muted">${esc(c.host)}:${c.port || '—'} · ${esc(c.database || '—')}${c.windows_auth ? ' · Windows auth' : ''}</div>
       <button class="btn danger" style="margin-top:0.45rem" data-del="${c.id}" type="button">Delete</button>
     </div>`).join('');
   el.querySelectorAll('[data-del]').forEach(btn => {
@@ -252,24 +254,42 @@ function stopSSE() {
   }
 }
 
-$('#conn-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
+function connPayload(fd) {
   const body = Object.fromEntries(fd.entries());
   body.port = parseInt(body.port || '0', 10);
+  body.windows_auth = body.windows_auth === '1';
+  return body;
+}
+
+function updateConnAuthUI() {
+  const type = $('#conn-form select[name=type]').value;
+  const winAuth = $('#conn-windows-auth').checked;
+  const showWin = type === 'mssql';
+  $('#conn-windows-wrap').classList.toggle('hidden', !showWin);
+  const sqlLogin = !(showWin && winAuth);
+  $('#conn-username').required = sqlLogin;
+  $('#conn-password-wrap').classList.toggle('hidden', !sqlLogin);
+}
+
+$('#conn-form select[name=type]').addEventListener('change', updateConnAuthUI);
+$('#conn-windows-auth').addEventListener('change', updateConnAuthUI);
+updateConnAuthUI();
+
+$('#conn-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = connPayload(new FormData(e.target));
   try {
     await api('/connections', { method: 'POST', body: JSON.stringify(body) });
     $('#conn-msg').textContent = 'Connection saved.';
     e.target.reset();
+    updateConnAuthUI();
   } catch (err) {
     $('#conn-msg').textContent = err.message;
   }
 });
 
 $('#test-conn-btn').addEventListener('click', async () => {
-  const fd = new FormData($('#conn-form'));
-  const body = Object.fromEntries(fd.entries());
-  body.port = parseInt(body.port || '0', 10);
+  const body = connPayload(new FormData($('#conn-form')));
   try {
     const res = await api('/connections/test', { method: 'POST', body: JSON.stringify(body) });
     if (res.empty === false) {

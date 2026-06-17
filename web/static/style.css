@@ -28,7 +28,7 @@ body {
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
 .error { color: var(--danger); margin-top: 0.75rem; }
-.note { margin-top: 1rem; font-size: 0.92rem; }
+.checkbox-row { flex-direction: row !important; align-items: center; gap: 0.5rem; }
 
 #app { max-width: 1180px; margin: 0 auto; padding: 1.25rem; }
 

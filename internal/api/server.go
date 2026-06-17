@@ -137,8 +137,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	send := func() {
-		ds, err := s.Store.Dashboard()
+	send := func(full bool) {
+		var ds store.DashboardState
+		var err error
+		if full {
+			ds, err = s.Store.Dashboard()
+		} else {
+			ds, err = s.Store.DashboardLive()
+		}
 		if err != nil {
 			return
 		}
@@ -148,8 +154,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "\n\n")
 		flusher.Flush()
 	}
-	send()
-	ticker := time.NewTicker(2 * time.Second)
+	send(true)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	notify := s.Runner.Notify()
 	for {
@@ -157,9 +163,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			send()
+			send(false)
 		case <-notify:
-			send()
+			send(false)
 		}
 	}
 }
@@ -184,8 +190,14 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c = body.Connection
-		if c.Name == "" || c.Host == "" || c.Username == "" {
-			http.Error(w, "name, host, and username required", http.StatusBadRequest)
+		if c.Name == "" || c.Host == "" {
+			http.Error(w, "name and host required", http.StatusBadRequest)
+			return
+		}
+		if c.Type == store.ConnMSSQL && c.WindowsAuth {
+			// Windows integrated auth — no SQL login required.
+		} else if c.Username == "" {
+			http.Error(w, "username required", http.StatusBadRequest)
 			return
 		}
 		if c.Type != store.ConnOracle && c.Type != store.ConnMSSQL {

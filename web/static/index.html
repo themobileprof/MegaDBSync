@@ -105,8 +105,12 @@
               <label>Port<input name="port" type="number" placeholder="1521 / 1433"></label>
               <label>Database<input name="database" placeholder="Service name or DB name"></label>
               <label>Schema<input name="schema" placeholder="Optional default schema"></label>
-              <label>Username<input name="username" required></label>
-              <label>Password<input name="password" type="password"></label>
+              <label>Username<input name="username" id="conn-username"></label>
+              <label id="conn-password-wrap">Password<input name="password" type="password" id="conn-password"></label>
+              <label id="conn-windows-wrap" class="checkbox-row hidden">
+                <input name="windows_auth" type="checkbox" value="1" id="conn-windows-auth">
+                Use Windows integrated authentication (SQL Server)
+              </label>
               <div class="form-actions">
                 <button class="btn" type="button" id="test-conn-btn">Test</button>
                 <button class="btn primary" type="submit">Save</button>

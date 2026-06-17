@@ -16,9 +16,10 @@ type Connection struct {
 	Host      string    `json:"host"`
 	Port      int       `json:"port"`
 	Database  string    `json:"database"`
-	Schema    string    `json:"schema"`
-	Username  string    `json:"username"`
-	Password  string    `json:"-"`
+	Schema      string    `json:"schema"`
+	Username    string    `json:"username"`
+	WindowsAuth bool      `json:"windows_auth"`
+	Password    string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

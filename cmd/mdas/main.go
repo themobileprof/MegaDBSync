@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -5,12 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/mdas/mdas/internal/api"
 	"github.com/mdas/mdas/internal/auth"
 	"github.com/mdas/mdas/internal/jobs"
+	"github.com/mdas/mdas/internal/platform"
 	"github.com/mdas/mdas/internal/store"
 	"github.com/mdas/mdas/web"
 
@@ -20,7 +21,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	dataDir := flag.String("data", defaultDataDir(), "Directory for app state and credentials")
+	dataDir := flag.String("data", platform.DefaultDataDir(), "Directory for app state and credentials")
 	flag.Parse()
 
 	st, err := store.Open(*dataDir)
@@ -59,25 +60,14 @@ func main() {
 		web.Handler().ServeHTTP(w, r)
 	}))
 
-	log.Printf("MDAS listening on http://%s (data: %s)", *addr, *dataDir)
+	log.Printf("MDAS listening on http://%s", *addr)
+	log.Printf("State directory: %s", *dataDir)
 	log.Printf("Close the browser anytime — background jobs keep running until you stop this process.")
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func defaultDataDir() string {
-	if dir := os.Getenv("MDAS_DATA"); dir != "" {
-		return dir
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "data"
-	}
-	return filepath.Join(filepath.Dir(exe), "data")
-}
-
 func init() {
-	// Ensure data dir message is visible on Windows consoles.
-	fmt.Println("MDAS — Migration & Daily Sync")
+	fmt.Println("MDAS — Migration & Daily Sync (Windows)")
 }

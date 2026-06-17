@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	go_ora "github.com/sijms/go-ora/v2"
 	"github.com/mdas/mdas/internal/store"
@@ -46,9 +45,7 @@ func OpenOracle(ctx context.Context, c store.Connection, password string) (*sql.
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	ConfigurePool(db, 2)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -61,23 +58,33 @@ func OpenMSSQL(ctx context.Context, c store.Connection, password string) (*sql.D
 	if port == 0 {
 		port = 1433
 	}
-	u := &url.URL{
-		Scheme: "sqlserver",
-		User:   url.UserPassword(c.Username, password),
-		Host:   fmt.Sprintf("%s:%d", c.Host, port),
+	host := fmt.Sprintf("%s:%d", c.Host, port)
+
+	var u *url.URL
+	if c.WindowsAuth {
+		u = &url.URL{Scheme: "sqlserver", Host: host}
+	} else {
+		u = &url.URL{
+			Scheme: "sqlserver",
+			User:   url.UserPassword(c.Username, password),
+			Host:   host,
+		}
 	}
 	q := u.Query()
 	if c.Database != "" {
 		q.Add("database", c.Database)
 	}
-	q.Add("encrypt", "disable")
+	if c.WindowsAuth {
+		q.Add("integrated security", "true")
+	}
+	q.Add("encrypt", "true")
+	q.Add("TrustServerCertificate", "true")
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("sqlserver", u.String())
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	ConfigurePool(db, 2)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -340,7 +347,7 @@ func BulkInsertMSSQL(ctx context.Context, db *sql.DB, schema, table string, colu
 	}
 	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(
 		quoteIdent(schema)+"."+quoteIdent(table),
-		mssql.BulkOptions{CheckConstraints: false, FireTriggers: false},
+		mssql.BulkOptions{CheckConstraints: false, FireTriggers: false, Tablock: true},
 		columns...,
 	))
 	if err != nil {

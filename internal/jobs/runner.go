@@ -182,7 +182,7 @@ func (s *Scheduler) maybeRunIncremental() {
 		SourceID:       st.ScheduleSourceID,
 		DestID:         st.ScheduleDestID,
 		BatchSize:      st.DefaultBatchSize,
-		ParallelTables: 1,
+		ParallelTables: st.DefaultParallel,
 	}
 	job, _ = s.Store.CreateJob(job)
 	_ = s.Store.LogEvent(job.ID, "info", "Scheduled incremental sync started")

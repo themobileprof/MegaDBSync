@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,10 +20,11 @@ func Open(dataDir string) (*Store, error) {
 	if err := osMkdir(dataDir); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepathJoin(dataDir, "mdas.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "mdas.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-64000)&_pragma=temp_store(MEMORY)")
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db, dataDir: dataDir}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS connections (
   database_name TEXT NOT NULL DEFAULT '',
   schema_name TEXT NOT NULL DEFAULT '',
   username TEXT NOT NULL,
+  windows_auth INTEGER NOT NULL DEFAULT 0,
   password_enc TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -148,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC
 	}
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN schedule_source_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN schedule_dest_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE connections ADD COLUMN windows_auth INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -170,7 +172,7 @@ func (s *Store) SetAdminPasswordHash(hash string) error {
 }
 
 func (s *Store) ListConnections() ([]Connection, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, host, port, database_name, schema_name, username, password_enc, created_at, updated_at FROM connections ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, type, host, port, database_name, schema_name, username, windows_auth, password_enc, created_at, updated_at FROM connections ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +189,7 @@ func (s *Store) ListConnections() ([]Connection, error) {
 }
 
 func (s *Store) GetConnection(id string) (Connection, error) {
-	row := s.db.QueryRow(`SELECT id, name, type, host, port, database_name, schema_name, username, password_enc, created_at, updated_at FROM connections WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id, name, type, host, port, database_name, schema_name, username, windows_auth, password_enc, created_at, updated_at FROM connections WHERE id=?`, id)
 	return scanConnectionRow(row)
 }
 
@@ -199,7 +201,9 @@ func (s *Store) SaveConnection(c Connection, plainPassword string) (Connection, 
 	}
 	c.UpdatedAt = now
 	enc := ""
-	if plainPassword != "" {
+	if c.WindowsAuth {
+		enc = ""
+	} else if plainPassword != "" {
 		var err error
 		enc, err = EncryptPassword(s.dataDir, plainPassword)
 		if err != nil {
@@ -217,14 +221,15 @@ func (s *Store) SaveConnection(c Connection, plainPassword string) (Connection, 
 		_ = old
 	}
 	_, err := s.db.Exec(`
-INSERT INTO connections (id, name, type, host, port, database_name, schema_name, username, password_enc, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO connections (id, name, type, host, port, database_name, schema_name, username, windows_auth, password_enc, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   name=excluded.name, type=excluded.type, host=excluded.host, port=excluded.port,
   database_name=excluded.database_name, schema_name=excluded.schema_name,
-  username=excluded.username, password_enc=CASE WHEN excluded.password_enc != '' THEN excluded.password_enc ELSE connections.password_enc END,
+  username=excluded.username, windows_auth=excluded.windows_auth,
+  password_enc=CASE WHEN excluded.windows_auth = 1 THEN '' WHEN excluded.password_enc != '' THEN excluded.password_enc ELSE connections.password_enc END,
   updated_at=excluded.updated_at`,
-		c.ID, c.Name, c.Type, c.Host, c.Port, c.Database, c.Schema, c.Username, enc,
+		c.ID, c.Name, c.Type, c.Host, c.Port, c.Database, c.Schema, c.Username, boolToInt(c.WindowsAuth), enc,
 		c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339))
 	return c, err
 }
@@ -236,6 +241,13 @@ func (s *Store) dbPasswordEnc(id string) (string, error) {
 }
 
 func (s *Store) ConnectionPassword(id string) (string, error) {
+	c, err := s.GetConnection(id)
+	if err != nil {
+		return "", err
+	}
+	if c.WindowsAuth {
+		return "", nil
+	}
 	enc, err := s.dbPasswordEnc(id)
 	if err != nil {
 		return "", err
@@ -401,7 +413,11 @@ func (s *Store) GetSyncState(sourceID, destID, schema, table string) (mode, wmCo
 func (s *Store) LogEvent(jobID, level, message string) error {
 	_, err := s.db.Exec(`INSERT INTO activity_events (job_id, level, message, created_at) VALUES (?, ?, ?, ?)`,
 		jobID, level, message, time.Now().UTC().Format(time.RFC3339))
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`DELETE FROM activity_events WHERE id NOT IN (SELECT id FROM activity_events ORDER BY id DESC LIMIT 500)`)
+	return nil
 }
 
 func (s *Store) RecentEvents(limit int) ([]ActivityEvent, error) {
@@ -427,6 +443,14 @@ func (s *Store) RecentEvents(limit int) ([]ActivityEvent, error) {
 }
 
 func (s *Store) Dashboard() (DashboardState, error) {
+	return s.dashboard(true)
+}
+
+func (s *Store) DashboardLive() (DashboardState, error) {
+	return s.dashboard(false)
+}
+
+func (s *Store) dashboard(includeConnections bool) (DashboardState, error) {
 	var ds DashboardState
 	active, err := s.ActiveJob()
 	if err != nil {
@@ -443,13 +467,15 @@ func (s *Store) Dashboard() (DashboardState, error) {
 			return ds, err
 		}
 	}
-	ds.Events, err = s.RecentEvents(80)
+	ds.Events, err = s.RecentEvents(50)
 	if err != nil {
 		return ds, err
 	}
-	ds.Connections, err = s.ListConnections()
-	if err != nil {
-		return ds, err
+	if includeConnections {
+		ds.Connections, err = s.ListConnections()
+		if err != nil {
+			return ds, err
+		}
 	}
 	ds.Working = active != nil && active.Status == JobRunning
 	return ds, nil
@@ -462,12 +488,25 @@ type scannable interface {
 func scanConnection(rows scannable) (Connection, error) {
 	var c Connection
 	var created, updated, enc string
-	if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.Host, &c.Port, &c.Database, &c.Schema, &c.Username, &enc, &created, &updated); err != nil {
+	var winAuth int
+	if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.Host, &c.Port, &c.Database, &c.Schema, &c.Username, &winAuth, &enc, &created, &updated); err != nil {
 		return c, err
 	}
+	c.WindowsAuth = winAuth == 1
 	c.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	c.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 	return c, nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func osMkdir(dir string) error {
+	return os.MkdirAll(dir, 0)
 }
 
 func scanConnectionRow(row *sql.Row) (Connection, error) {
@@ -514,21 +553,3 @@ func scanTableTask(rows scannable) (TableTask, error) {
 	t.UpdatedAt, _ = time.Parse(time.RFC3339, updated.String)
 	return t, nil
 }
-
-func osMkdir(dir string) error {
-	return mkdirAll(dir, 0o700)
-}
-
-func mkdirAll(path string, perm os.FileMode) error {
-	return osMkdirAll(path, perm)
-}
-
-func filepathJoin(elem ...string) string {
-	return filepath.Join(elem...)
-}
-
-// small indirections for testability
-var (
-	osMkdirAll  = func(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
-	stringsJoin = strings.Join
-)
