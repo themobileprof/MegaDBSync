@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MDAS — Database Sync</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo-mark" aria-hidden="true"></div>
+        <div>
+          <h1>MDAS</h1>
+          <p class="tagline">Oracle → SQL Server migration</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="work-indicator" class="work-indicator hidden" title="Background work active">
+          <span class="pulse-ring"></span>
+          <span class="pulse-dot"></span>
+          <span>Syncing</span>
+        </span>
+        <button id="logout-btn" class="btn ghost hidden" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <section id="auth-panel" class="panel auth-panel">
+      <h2 id="auth-title">Sign in</h2>
+      <p id="auth-subtitle" class="muted">Enter your admin password to manage connections and jobs.</p>
+      <form id="auth-form">
+        <label>
+          Password
+          <input id="password" type="password" autocomplete="current-password" required minlength="8">
+        </label>
+        <button class="btn primary" type="submit">Continue</button>
+      </form>
+      <p id="auth-error" class="error hidden"></p>
+    </section>
+
+    <main id="main-panel" class="hidden">
+      <nav class="tabs">
+        <button class="tab active" data-tab="dashboard" type="button">Dashboard</button>
+        <button class="tab" data-tab="connections" type="button">Connections</button>
+        <button class="tab" data-tab="jobs" type="button">Jobs</button>
+        <button class="tab" data-tab="settings" type="button">Settings</button>
+      </nav>
+
+      <section id="tab-dashboard" class="tab-panel active">
+        <div class="hero-status">
+          <div id="status-anim" class="status-anim idle">
+            <div class="orbit"></div>
+            <div class="orbit orbit-delay"></div>
+            <div class="core"></div>
+          </div>
+          <div class="hero-copy">
+            <h2 id="status-headline">Idle</h2>
+            <p id="status-detail" class="muted">No active migration. Background workers keep running when this page is closed.</p>
+          </div>
+        </div>
+
+        <div id="active-job-card" class="card hidden">
+          <h3>Active job</h3>
+          <div class="progress-block">
+            <div class="progress-label">
+              <span id="job-phase">—</span>
+              <span id="job-table" class="muted"></span>
+            </div>
+            <div class="progress-track">
+              <div id="job-progress" class="progress-fill"></div>
+            </div>
+            <div class="stat-row">
+              <span><strong id="job-rows">0</strong> rows</span>
+              <span><strong id="job-tables">0/0</strong> tables</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h3>Table progress</h3>
+            <div id="table-task-list" class="task-list empty-state">No table tasks yet.</div>
+          </div>
+          <div class="card">
+            <h3>Activity log</h3>
+            <div id="event-log" class="event-log empty-state">Waiting for events…</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-connections" class="tab-panel">
+        <div class="grid two">
+          <div class="card">
+            <h3>Add connection</h3>
+            <form id="conn-form" class="form-grid">
+              <label>Name<input name="name" required placeholder="Production Oracle"></label>
+              <label>Type
+                <select name="type" required>
+                  <option value="oracle">Oracle (source)</option>
+                  <option value="mssql">SQL Server (destination)</option>
+                </select>
+              </label>
+              <label>Host<input name="host" required placeholder="192.168.1.10"></label>
+              <label>Port<input name="port" type="number" placeholder="1521 / 1433"></label>
+              <label>Database<input name="database" placeholder="Service name or DB name"></label>
+              <label>Schema<input name="schema" placeholder="Optional default schema"></label>
+              <label>Username<input name="username" required></label>
+              <label>Password<input name="password" type="password"></label>
+              <div class="form-actions">
+                <button class="btn" type="button" id="test-conn-btn">Test</button>
+                <button class="btn primary" type="submit">Save</button>
+              </div>
+            </form>
+            <p id="conn-msg" class="muted"></p>
+          </div>
+          <div class="card">
+            <h3>Saved connections</h3>
+            <div id="conn-list" class="conn-list empty-state">No connections yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-jobs" class="tab-panel">
+        <div class="card">
+          <h3>Start a job</h3>
+          <form id="job-form" class="form-grid">
+            <label>Source (Oracle)
+              <select name="source_id" id="job-source" required></select>
+            </label>
+            <label>Destination (SQL Server)
+              <select name="dest_id" id="job-dest" required></select>
+            </label>
+            <label>Job type
+              <select name="type">
+                <option value="bulk_full">Bulk migration (empty destination only)</option>
+                <option value="incremental_sync">Incremental sync</option>
+              </select>
+            </label>
+            <label>Batch size<input name="batch_size" type="number" min="1000" step="1000" placeholder="50000"></label>
+            <label>Parallel tables<input name="parallel_tables" type="number" min="1" max="8" placeholder="2"></label>
+            <label>Table filter (optional)<input name="table_filter" placeholder="SCHEMA.TABLE or TABLE, comma-separated"></label>
+            <div class="form-actions">
+              <button class="btn primary" type="submit">Create &amp; start</button>
+              <button class="btn danger" type="button" id="cancel-job-btn">Cancel active job</button>
+            </div>
+          </form>
+          <p class="muted note">Bulk jobs refuse to run unless the destination has zero user tables.</p>
+        </div>
+        <div class="card">
+          <h3>Recent jobs</h3>
+          <div id="job-list" class="job-list empty-state">No jobs yet.</div>
+        </div>
+      </section>
+
+      <section id="tab-settings" class="tab-panel">
+        <div class="card">
+          <h3>Scheduler &amp; performance</h3>
+          <form id="settings-form" class="form-grid">
+            <label>Scheduled incremental source (Oracle)
+              <select name="schedule_source_id" id="schedule-source"></select>
+            </label>
+            <label>Scheduled incremental destination (SQL Server)
+              <select name="schedule_dest_id" id="schedule-dest"></select>
+            </label>
+            <label>Incremental schedule
+              <select name="schedule_cron">
+                <option value="0 */4 * * *">Every 4 hours</option>
+                <option value="0 */6 * * *">Every 6 hours</option>
+                <option value="0 */12 * * *">Every 12 hours</option>
+                <option value="@daily">Daily at 2:00 AM</option>
+                <option value="@hourly">Hourly</option>
+              </select>
+            </label>
+            <label>Default batch size<input name="default_batch_size" type="number" min="1000" step="1000"></label>
+            <label>Default parallel tables<input name="default_parallel" type="number" min="1" max="8"></label>
+            <button class="btn primary" type="submit">Save settings</button>
+          </form>
+        </div>
+        <div class="card">
+          <h3>Admin password</h3>
+          <form id="password-form" class="form-grid">
+            <label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
+            <label>New password<input name="new_password" type="password" autocomplete="new-password" required minlength="8"></label>
+            <button class="btn primary" type="submit">Change password</button>
+          </form>
+          <p id="password-msg" class="muted"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
