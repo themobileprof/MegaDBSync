@@ -26,6 +26,10 @@ go mod tidy
 go build -o mdas.exe .\cmd\mdas
 ```
 
+### CI
+
+Every push to `main` triggers [GitHub Actions](.github/workflows/build.yml), which cross-compiles **Windows** and **Linux** binaries (`CGO_ENABLED=0`) and uploads them as workflow artifacts (`mdas-windows-amd64`, `mdas-linux-amd64`). Download from the **Actions** tab → latest run → **Artifacts**.
+
 ## Run
 
 ```powershell
