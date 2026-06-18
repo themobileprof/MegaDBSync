@@ -160,7 +160,7 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task, tableCopyOpts{})
+			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task, tableCopyOpts{maxRows: job.MaxRowsPerTable})
 			if err != nil {
 				if ctx.Err() != nil {
 					task.Status = store.JobPaused
@@ -490,8 +490,12 @@ func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbcon
 			return total, ctx.Err()
 		default:
 		}
+		b := effectiveBatch(batch, opts.maxRows, total)
+		if b <= 0 {
+			break
+		}
 		chunkCtx, cancel := context.WithTimeout(ctx, chunkTimeout)
-		rows, nextRowID, err := e.fetchFullChunk(chunkCtx, ora, meta, colNames, batch, lastRowID, opts.dateCol, opts.bounds)
+		rows, nextRowID, err := e.fetchFullChunk(chunkCtx, ora, meta, colNames, b, lastRowID, opts.dateCol, opts.bounds)
 		if err != nil {
 			cancel()
 			if task != nil {
@@ -526,7 +530,10 @@ func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbcon
 				}
 			}
 		}
-		if len(rows) < batch {
+		if opts.maxRows > 0 && total >= int64(opts.maxRows) {
+			break
+		}
+		if len(rows) < b {
 			break
 		}
 	}

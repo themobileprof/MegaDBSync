@@ -169,6 +169,7 @@ function renderDashboard(data) {
       $('#paused-batch-size').value = job.batch_size || 50000;
       $('#paused-parallel').value = job.parallel_tables || 2;
       $('#paused-chunk-timeout').value = job.chunk_timeout_sec || '';
+      $('#paused-max-rows').value = job.max_rows_per_table || '';
       const showDates = job.type === 'date_range_backup';
       $('#paused-date-fields').classList.toggle('hidden', !showDates);
       if (showDates) {
@@ -391,6 +392,7 @@ $('#job-form').addEventListener('submit', async (e) => {
   body.batch_size = parseInt(body.batch_size || '0', 10);
   body.parallel_tables = parseInt(body.parallel_tables || '0', 10);
   body.chunk_timeout_sec = parseInt(body.chunk_timeout_sec || '0', 10);
+  body.max_rows_per_table = parseInt(body.max_rows_per_table || '0', 10);
   if (body.type !== 'date_range_backup') {
     delete body.date_from;
     delete body.date_to;
@@ -447,6 +449,7 @@ $('#resume-job-btn').addEventListener('click', async () => {
       batch_size: parseInt($('#paused-batch-size').value, 10),
       parallel_tables: parseInt($('#paused-parallel').value, 10),
       chunk_timeout_sec: parseInt($('#paused-chunk-timeout').value || '0', 10),
+      max_rows_per_table: parseInt($('#paused-max-rows').value || '0', 10),
     };
     if (!$('#paused-date-fields').classList.contains('hidden')) {
       patch.date_from = $('#paused-date-from').value;

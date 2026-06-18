@@ -56,6 +56,7 @@ type Job struct {
 	DateColumn       string    `json:"date_column,omitempty"`
 	DateFrom         string    `json:"date_from,omitempty"`
 	DateTo           string    `json:"date_to,omitempty"`
+	MaxRowsPerTable  int       `json:"max_rows_per_table"`
 	ErrorMessage    string    `json:"error_message,omitempty"`
 	RowsTotal       int64     `json:"rows_total"`
 	RowsDone        int64     `json:"rows_done"`

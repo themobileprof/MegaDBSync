@@ -87,6 +87,7 @@
             <label>Batch size<input id="paused-batch-size" type="number" min="1000" step="1000"></label>
             <label>Parallel tables<input id="paused-parallel" type="number" min="1" max="8"></label>
             <label>Chunk timeout (sec)<input id="paused-chunk-timeout" type="number" min="30" step="30" title="Max seconds per batch before timeout"></label>
+            <label>Max rows per table<input id="paused-max-rows" type="number" min="0" step="1" placeholder="0 = unlimited"></label>
             <div id="paused-date-fields" class="form-grid span-all hidden">
               <label>Date from<input id="paused-date-from" type="date"></label>
               <label>Date to<input id="paused-date-to" type="date"></label>
@@ -171,6 +172,7 @@
             <label>Parallel tables<input name="parallel_tables" type="number" min="1" max="8" placeholder="2"></label>
             <label>Chunk timeout (sec)<input name="chunk_timeout_sec" type="number" min="30" step="30" placeholder="300" title="Max seconds per batch; triggers pause on timeout"></label>
             <label>Table filter (optional)<input name="table_filter" placeholder="SCHEMA.TABLE or TABLE, comma-separated"></label>
+            <label>Max rows per table<input name="max_rows_per_table" type="number" min="0" step="1" placeholder="0 = unlimited" title="Cap rows copied per table — use 5 for a sample migrate"></label>
             <div id="date-range-fields" class="form-grid span-all hidden">
               <label>Date from (optional)<input name="date_from" type="date" title="YYYY-MM-DD — leave empty for no lower bound"></label>
               <label>Date to (optional)<input name="date_to" type="date" title="YYYY-MM-DD — leave empty for no upper bound"></label>
@@ -180,7 +182,7 @@
               <button class="btn primary" type="submit">Create &amp; start</button>
             </div>
           </form>
-          <p class="muted note">Tables migrate smallest-first. <strong>Date range backup</strong> upserts into an existing destination — leave both dates empty to copy all rows, or set from/to for a window (one day, months, or years). Bulk migration requires an empty destination.</p>
+          <p class="muted note">Tables migrate smallest-first. Set <strong>Max rows per table</strong> to <strong>5</strong> for a quick sample of every table (use <strong>Date range backup</strong> so the destination need not be empty). Bulk migration requires an empty destination.</p>
         </div>
         <div class="card">
           <h3>Recent jobs</h3>

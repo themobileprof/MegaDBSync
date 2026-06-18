@@ -313,6 +313,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			DateColumn      string        `json:"date_column"`
 			DateFrom        string        `json:"date_from"`
 			DateTo          string        `json:"date_to"`
+			MaxRowsPerTable int           `json:"max_rows_per_table"`
 			Start           bool          `json:"start"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -335,6 +336,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			BatchSize: body.BatchSize, ParallelTables: body.ParallelTables,
 			ChunkTimeoutSec: body.ChunkTimeoutSec, TableFilter: body.TableFilter,
 			DateColumn: body.DateColumn, DateFrom: body.DateFrom, DateTo: body.DateTo,
+			MaxRowsPerTable: body.MaxRowsPerTable,
 		}
 		if job.Type == "" {
 			job.Type = store.JobBulkFull
@@ -436,6 +438,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 			DateColumn      string `json:"date_column"`
 			DateFrom        string `json:"date_from"`
 			DateTo          string `json:"date_to"`
+			MaxRowsPerTable int    `json:"max_rows_per_table"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -462,7 +465,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.Store.UpdateJobSettings(id, body.BatchSize, body.ParallelTables, body.ChunkTimeoutSec, dateColumn, body.DateFrom, body.DateTo); err != nil {
+		if err := s.Store.UpdateJobSettings(id, body.BatchSize, body.ParallelTables, body.ChunkTimeoutSec, body.MaxRowsPerTable, dateColumn, body.DateFrom, body.DateTo); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

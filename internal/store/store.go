@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   date_column TEXT NOT NULL DEFAULT '',
   date_from TEXT NOT NULL DEFAULT '',
   date_to TEXT NOT NULL DEFAULT '',
+  max_rows_per_table INTEGER NOT NULL DEFAULT 0,
   error_message TEXT NOT NULL DEFAULT '',
   rows_total INTEGER NOT NULL DEFAULT 0,
   rows_done INTEGER NOT NULL DEFAULT 0,
@@ -175,6 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN date_column TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN date_from TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN date_to TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN max_rows_per_table INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -305,18 +307,18 @@ func (s *Store) CreateJob(j Job) (Job, error) {
 	j.CreatedAt = now
 	j.UpdatedAt = now
 	_, err := s.db.Exec(`
-INSERT INTO jobs (id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter, date_column, date_from, date_to, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO jobs (id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter, date_column, date_from, date_to, max_rows_per_table, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Type, j.SourceID, j.DestID, j.Status, j.BatchSize, j.ParallelTables, j.ChunkTimeoutSec, j.TableFilter,
-		j.DateColumn, j.DateFrom, j.DateTo,
+		j.DateColumn, j.DateFrom, j.DateTo, j.MaxRowsPerTable,
 		j.CreatedAt.Format(time.RFC3339), j.UpdatedAt.Format(time.RFC3339))
 	return j, err
 }
 
-func (s *Store) UpdateJobSettings(id string, batchSize, parallel, chunkTimeout int, dateColumn, dateFrom, dateTo string) error {
+func (s *Store) UpdateJobSettings(id string, batchSize, parallel, chunkTimeout, maxRows int, dateColumn, dateFrom, dateTo string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`UPDATE jobs SET batch_size=?, parallel_tables=?, chunk_timeout_sec=?, date_column=?, date_from=?, date_to=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
-		batchSize, parallel, chunkTimeout, dateColumn, dateFrom, dateTo, now, id, JobPaused, JobFailed)
+	_, err := s.db.Exec(`UPDATE jobs SET batch_size=?, parallel_tables=?, chunk_timeout_sec=?, max_rows_per_table=?, date_column=?, date_from=?, date_to=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
+		batchSize, parallel, chunkTimeout, maxRows, dateColumn, dateFrom, dateTo, now, id, JobPaused, JobFailed)
 	return err
 }
 
@@ -355,7 +357,7 @@ WHERE id=?`,
 
 func (s *Store) GetJob(id string) (Job, error) {
 	row := s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
-  date_column, date_from, date_to, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
+  date_column, date_from, date_to, max_rows_per_table, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
@@ -365,7 +367,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 		limit = 20
 	}
 	rows, err := s.db.Query(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
-  date_column, date_from, date_to, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
+  date_column, date_from, date_to, max_rows_per_table, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -384,7 +386,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 
 func (s *Store) ActiveJob() (*Job, error) {
 	j, err := scanJob(s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
-  date_column, date_from, date_to, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
+  date_column, date_from, date_to, max_rows_per_table, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs WHERE status IN ('pending','running','paused') ORDER BY created_at LIMIT 1`))
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -607,7 +609,7 @@ func scanJob(rows scannable) (Job, error) {
 	var j Job
 	var started, completed, created, updated sql.NullString
 	if err := rows.Scan(&j.ID, &j.Type, &j.SourceID, &j.DestID, &j.Status, &j.BatchSize, &j.ParallelTables, &j.ChunkTimeoutSec, &j.TableFilter,
-		&j.DateColumn, &j.DateFrom, &j.DateTo, &j.ErrorMessage, &j.RowsTotal, &j.RowsDone, &j.TablesTotal, &j.TablesDone, &j.CurrentTable, &j.CurrentPhase,
+		&j.DateColumn, &j.DateFrom, &j.DateTo, &j.MaxRowsPerTable, &j.ErrorMessage, &j.RowsTotal, &j.RowsDone, &j.TablesTotal, &j.TablesDone, &j.CurrentTable, &j.CurrentPhase,
 		&started, &completed, &created, &updated); err != nil {
 		return j, err
 	}

@@ -11,11 +11,26 @@ import (
 	"github.com/themobileprof/megadbsync/internal/store"
 )
 
-// tableCopyOpts configures optional date filtering and upsert behaviour during table copy.
+// tableCopyOpts configures optional date filtering, row cap, and upsert behaviour during table copy.
 type tableCopyOpts struct {
 	dateCol string
 	bounds  DateBounds
 	upsert  bool
+	maxRows int
+}
+
+func effectiveBatch(batch, maxRows int, total int64) int {
+	if maxRows <= 0 {
+		return batch
+	}
+	remain := maxRows - int(total)
+	if remain <= 0 {
+		return 0
+	}
+	if remain < batch {
+		return remain
+	}
+	return batch
 }
 
 func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst store.Connection, srcPass, dstPass string) error {
@@ -132,7 +147,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 		pending = append(pending, meta)
 	}
 
-	copyOpts := tableCopyOpts{dateCol: "", bounds: bounds, upsert: true}
+	copyOpts := tableCopyOpts{bounds: bounds, upsert: true, maxRows: job.MaxRowsPerTable}
 	parallel := max(1, job.ParallelTables)
 	sem := make(chan struct{}, parallel)
 	errCh := make(chan error, len(pending))
