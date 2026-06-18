@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	go_ora "github.com/sijms/go-ora/v2"
-	"github.com/mdas/mdas/internal/store"
+	"github.com/themobileprof/megadbsync/internal/store"
 	mssql "github.com/microsoft/go-mssqldb"
 )
 

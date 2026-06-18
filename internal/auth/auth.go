@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	sessionCookie = "mdas_session"
+	sessionCookie = "megadbsync_session"
 	sessionTTL    = 24 * time.Hour
 )
 

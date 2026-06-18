@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mdas/mdas/internal/migrate"
-	"github.com/mdas/mdas/internal/store"
+	"github.com/themobileprof/megadbsync/internal/migrate"
+	"github.com/themobileprof/megadbsync/internal/store"
 )
 
 type Runner struct {

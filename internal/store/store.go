@@ -20,7 +20,8 @@ func Open(dataDir string) (*Store, error) {
 	if err := osMkdir(dataDir); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "mdas.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-64000)&_pragma=temp_store(MEMORY)")
+	dbPath := resolveDBPath(dataDir)
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-64000)&_pragma=temp_store(MEMORY)")
 	if err != nil {
 		return nil, err
 	}
@@ -520,6 +521,18 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func resolveDBPath(dataDir string) string {
+	primary := filepath.Join(dataDir, "megadbsync.db")
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	legacy := filepath.Join(dataDir, "mdas.db")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return primary
 }
 
 func osMkdir(dir string) error {

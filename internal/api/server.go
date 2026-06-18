@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mdas/mdas/internal/auth"
-	"github.com/mdas/mdas/internal/dbconn"
-	"github.com/mdas/mdas/internal/jobs"
-	"github.com/mdas/mdas/internal/store"
+	"github.com/themobileprof/megadbsync/internal/auth"
+	"github.com/themobileprof/megadbsync/internal/dbconn"
+	"github.com/themobileprof/megadbsync/internal/jobs"
+	"github.com/themobileprof/megadbsync/internal/store"
 )
 
 type Server struct {

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  IIS reverse proxy for MDAS
-  Copy to your site root (e.g. C:\inetpub\mdas-proxy\web.config)
+  IIS reverse proxy for MegaDBSync
+  Copy to your site root (e.g. C:\inetpub\megadbsync-proxy\web.config)
 
   Prerequisites:
   - IIS URL Rewrite Module 2
   - Application Request Routing (ARR) with proxy enabled
   - ARR "Response buffer threshold" = 0 (required for /api/events SSE dashboard)
-  - MDAS running at http://127.0.0.1:8080
+  - MegaDBSync running at http://127.0.0.1:8080
   - Allow server variables HTTP_X_FORWARDED_PROTO and HTTP_X_FORWARDED_FOR in URL Rewrite
 -->
 <configuration>
@@ -17,7 +17,7 @@
 
     <rewrite>
       <rules>
-        <rule name="MDAS reverse proxy" stopProcessing="true">
+        <rule name="MegaDBSync reverse proxy" stopProcessing="true">
           <match url="(.*)" />
           <action type="Rewrite" url="http://127.0.0.1:8080/{R:1}" />
           <serverVariables>

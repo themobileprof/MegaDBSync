@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mdas/mdas/internal/store"
+	"github.com/themobileprof/megadbsync/internal/store"
 )
 
 type ExploreTable struct {

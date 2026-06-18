@@ -1,4 +1,4 @@
-module github.com/mdas/mdas
+module github.com/themobileprof/megadbsync
 
 go 1.22
 

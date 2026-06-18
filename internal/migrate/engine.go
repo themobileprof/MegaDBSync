@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mdas/mdas/internal/dbconn"
-	"github.com/mdas/mdas/internal/store"
+	"github.com/themobileprof/megadbsync/internal/dbconn"
+	"github.com/themobileprof/megadbsync/internal/store"
 )
 
 type Engine struct {
