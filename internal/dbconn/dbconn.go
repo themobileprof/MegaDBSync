@@ -16,6 +16,7 @@ type TableMeta struct {
 	Schema           string // Oracle owner (source)
 	DestSchema       string // SQL Server schema (destination)
 	Name             string
+	JobID            string // optional: migration job for insert failure logs
 	Columns          []ColumnMeta
 	PrimaryKeys      []string
 	RowCount         int64
@@ -36,6 +37,15 @@ type ColumnMeta struct {
 	NumericPrec  *int64
 	NumericScale *int64
 	Nullable     bool
+	MSSQLType    string // inferred destination type; empty uses MapOracleType
+}
+
+// EffectiveMSSQLType returns the SQL Server type used for DDL and coercion.
+func EffectiveMSSQLType(c ColumnMeta) string {
+	if strings.TrimSpace(c.MSSQLType) != "" {
+		return c.MSSQLType
+	}
+	return MapOracleType(c)
 }
 
 func OpenOracle(ctx context.Context, c store.Connection, password string) (*sql.DB, error) {
@@ -383,7 +393,7 @@ func CreateMSSQLTable(ctx context.Context, db *sql.DB, meta TableMeta) error {
 		}
 		b.WriteString(quoteIdent(col.Name))
 		b.WriteString(" ")
-		b.WriteString(MapOracleType(col))
+		b.WriteString(EffectiveMSSQLType(col))
 		if !col.Nullable {
 			b.WriteString(" NOT NULL")
 		}
@@ -414,12 +424,19 @@ func quoteLiteral(s string) string {
 }
 
 func BulkInsertMSSQL(ctx context.Context, db *sql.DB, schema, table string, columns []string, rows [][]any) (int64, error) {
+	n, _, err := bulkInsertMSSQL(ctx, db, schema, table, columns, rows)
+	return n, err
+}
+
+// bulkInsertMSSQL streams rows via CopyIn. On row failure failIdx is the 0-based row index; on
+// flush/transaction failure failIdx is -1.
+func bulkInsertMSSQL(ctx context.Context, db *sql.DB, schema, table string, columns []string, rows [][]any) (int64, int, error) {
 	if len(rows) == 0 {
-		return 0, nil
+		return 0, -1, nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, -1, err
 	}
 	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(
 		quoteIdent(schema)+"."+quoteIdent(table),
@@ -428,23 +445,23 @@ func BulkInsertMSSQL(ctx context.Context, db *sql.DB, schema, table string, colu
 	))
 	if err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, -1, err
 	}
 	defer stmt.Close()
-	for _, row := range rows {
+	for i, row := range rows {
 		if _, err := stmt.ExecContext(ctx, row...); err != nil {
 			_ = tx.Rollback()
-			return 0, err
+			return 0, i, err
 		}
 	}
 	if _, err := stmt.ExecContext(ctx); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, -1, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, -1, err
 	}
-	return int64(len(rows)), nil
+	return int64(len(rows)), -1, nil
 }
 
 func MergeUpsertMSSQL(ctx context.Context, db *sql.DB, schema, table string, columns, pks []string, rows [][]any) (int64, error) {

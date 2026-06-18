@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS activity_events (
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_table_tasks_job ON table_tasks(job_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS insert_failures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL DEFAULT '',
+  schema_name TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  row_index INTEGER NOT NULL DEFAULT 0,
+  row_json TEXT NOT NULL DEFAULT '',
+  error_msg TEXT NOT NULL DEFAULT '',
+  statement TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_insert_failures_job ON insert_failures(job_id, created_at DESC);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -674,4 +688,42 @@ func scanTableTask(rows scannable) (TableTask, error) {
 	}
 	t.UpdatedAt, _ = time.Parse(time.RFC3339, updated.String)
 	return t, nil
+}
+
+func (s *Store) LogInsertFailure(rec InsertFailureRecord) error {
+	_, err := s.db.Exec(`INSERT INTO insert_failures (job_id, schema_name, table_name, row_index, row_json, error_msg, statement, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.JobID, rec.SchemaName, rec.TableName, rec.RowIndex, rec.RowJSON, rec.ErrorMsg, rec.Statement, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`DELETE FROM insert_failures WHERE id NOT IN (SELECT id FROM insert_failures ORDER BY id DESC LIMIT 5000)`)
+	return nil
+}
+
+func (s *Store) ListInsertFailures(jobID string, limit int) ([]InsertFailureRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows *sql.Rows
+	var err error
+	if jobID != "" {
+		rows, err = s.db.Query(`SELECT id, job_id, schema_name, table_name, row_index, row_json, error_msg, statement, created_at FROM insert_failures WHERE job_id = ? ORDER BY id DESC LIMIT ?`, jobID, limit)
+	} else {
+		rows, err = s.db.Query(`SELECT id, job_id, schema_name, table_name, row_index, row_json, error_msg, statement, created_at FROM insert_failures ORDER BY id DESC LIMIT ?`, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InsertFailureRecord
+	for rows.Next() {
+		var rec InsertFailureRecord
+		var ts string
+		if err := rows.Scan(&rec.ID, &rec.JobID, &rec.SchemaName, &rec.TableName, &rec.RowIndex, &rec.RowJSON, &rec.ErrorMsg, &rec.Statement, &ts); err != nil {
+			return nil, err
+		}
+		rec.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }

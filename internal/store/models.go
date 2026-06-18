@@ -111,6 +111,18 @@ type AppSettings struct {
 	EngineEnabled              bool  `json:"engine_enabled"`
 }
 
+type InsertFailureRecord struct {
+	ID         int64     `json:"id"`
+	JobID      string    `json:"job_id"`
+	SchemaName string    `json:"schema_name"`
+	TableName  string    `json:"table_name"`
+	RowIndex   int       `json:"row_index"`
+	RowJSON    string    `json:"row_json"`
+	ErrorMsg   string    `json:"error_msg"`
+	Statement  string    `json:"statement"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type ActivityEvent struct {
 	ID        int64     `json:"id"`
 	JobID     string    `json:"job_id"`

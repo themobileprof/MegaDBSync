@@ -164,7 +164,7 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task, tableCopyOpts{maxRows: job.MaxRowsPerTable})
+			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task, tableCopyOpts{JobID: job.ID, maxRows: job.MaxRowsPerTable})
 			if err != nil {
 				if ctx.Err() != nil {
 					task.Status = store.JobPaused
@@ -457,7 +457,8 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 
 func (e *Engine) syncTableIncremental(ctx context.Context, jobID, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, chunkTimeout time.Duration, task *store.TableTask) (int64, syncState, error) {
 	normalizeDestSchema(&meta)
-	if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+	meta.JobID = jobID
+	if err := dbconn.PrepareDestinationTableInferred(ctx, ora, mssqlDB, &meta, dbconn.SchemaInferenceSampleRows); err != nil {
 		return 0, state, err
 	}
 	cur := state
@@ -490,10 +491,15 @@ func (e *Engine) syncTableIncremental(ctx context.Context, jobID, sourceID, dest
 			cancel()
 			break
 		}
-		n, err := dbconn.MergeUpsertMSSQL(chunkCtx, mssqlDB, meta.DestSchema, meta.Name, cols, meta.PrimaryKeys, rows)
+		rows = dbconn.NormalizeRowsForMSSQL(meta.Columns, rows)
+		writeRes, err := dbconn.WriteRowsMSSQL(chunkCtx, mssqlDB, meta, cols, rows, true, e.insertFailureHandler(jobID))
 		cancel()
 		if err != nil {
 			return total, cur, wrapChunkErr(err, chunkTimeout)
+		}
+		n := writeRes.Inserted
+		if writeRes.Skipped > 0 {
+			_ = e.Store.LogEvent(jobID, "warn", fmt.Sprintf("%s: skipped %d row(s) — see insert_failures log", destTableLabel(meta), writeRes.Skipped))
 		}
 		total += n
 		cur = next
@@ -522,7 +528,8 @@ func (e *Engine) syncTableIncremental(ctx context.Context, jobID, sourceID, dest
 
 func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, startRowID string, chunkTimeout time.Duration, task *store.TableTask, opts tableCopyOpts) (int64, error) {
 	normalizeDestSchema(&meta)
-	if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+	meta.JobID = opts.JobID
+	if err := dbconn.PrepareDestinationTableInferred(ctx, ora, mssqlDB, &meta, dbconn.SchemaInferenceSampleRows); err != nil {
 		return 0, err
 	}
 	colNames := make([]string, len(meta.Columns))
@@ -640,11 +647,31 @@ func (e *Engine) captureSyncHighWater(ctx context.Context, ora *sql.DB, meta dbc
 }
 
 func (e *Engine) writeChunk(ctx context.Context, mssqlDB *sql.DB, meta dbconn.TableMeta, colNames []string, rows [][]any, opts tableCopyOpts) (int64, error) {
-	rows = dbconn.NormalizeRowsForMSSQL(meta.Columns, rows)
-	if opts.upsert {
-		return dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.DestSchema, meta.Name, colNames, meta.PrimaryKeys, rows)
+	res, err := dbconn.WriteRowsMSSQL(ctx, mssqlDB, meta, colNames, rows, opts.upsert, e.insertFailureHandler(opts.JobID))
+	if err != nil {
+		return res.Inserted, err
 	}
-	return dbconn.BulkInsertMSSQL(ctx, mssqlDB, meta.DestSchema, meta.Name, colNames, rows)
+	if res.Skipped > 0 && opts.JobID != "" {
+		_ = e.Store.LogEvent(opts.JobID, "warn", fmt.Sprintf("%s: skipped %d row(s) after conversion retries — see insert_failures log", destTableLabel(meta), res.Skipped))
+	}
+	return res.Inserted, nil
+}
+
+func (e *Engine) insertFailureHandler(jobID string) dbconn.InsertFailureHandler {
+	if e.Store == nil {
+		return nil
+	}
+	return func(f dbconn.InsertFailure) error {
+		return e.Store.LogInsertFailure(store.InsertFailureRecord{
+			JobID:      jobID,
+			SchemaName: f.DestSchema,
+			TableName:  f.Table,
+			RowIndex:   f.RowIndex,
+			RowJSON:    f.RowJSON,
+			ErrorMsg:   f.Error,
+			Statement:  f.Statement,
+		})
+	}
 }
 
 func (e *Engine) fetchFullChunk(ctx context.Context, ora *sql.DB, meta dbconn.TableMeta, cols []string, batch int, lastRowID, dateCol string, bounds DateBounds) ([][]any, string, error) {

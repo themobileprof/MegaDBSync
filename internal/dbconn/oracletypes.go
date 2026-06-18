@@ -201,7 +201,10 @@ func NormalizeValueForMSSQL(v any, col ColumnMeta) any {
 		return nil
 	}
 	if unwrapped, ok := unwrapSQLNull(v); ok {
-		return unwrapped
+		if unwrapped == nil {
+			return nil
+		}
+		v = unwrapped
 	}
 
 	dt := strings.ToUpper(col.DataType)
@@ -215,6 +218,14 @@ func NormalizeValueForMSSQL(v any, col ColumnMeta) any {
 		if isBinaryOracleType(dt) {
 			if b, err := hex.DecodeString(val); err == nil {
 				return b
+			}
+		}
+		if isOracleNumericType(dt) {
+			if n, ok := parseIntString(val); ok {
+				return n
+			}
+			if f, ok := parseFloatString(val); ok {
+				return normalizeFloat(f, dt)
 			}
 		}
 		return val
@@ -246,9 +257,12 @@ func NormalizeValueForMSSQL(v any, col ColumnMeta) any {
 		return int64(reflectUint(val))
 	default:
 		s := fmt.Sprint(val)
-		if strings.Contains(dt, "NUMBER") || strings.Contains(dt, "INT") || strings.Contains(dt, "FLOAT") {
-			if looksNumeric(s) {
-				return s
+		if isOracleNumericType(dt) {
+			if n, ok := parseIntString(s); ok {
+				return n
+			}
+			if f, ok := parseFloatString(s); ok {
+				return normalizeFloat(f, dt)
 			}
 		}
 		if isBinaryOracleType(dt) {
@@ -258,6 +272,14 @@ func NormalizeValueForMSSQL(v any, col ColumnMeta) any {
 		}
 		return v
 	}
+}
+
+func isOracleNumericType(dt string) bool {
+	return strings.Contains(dt, "NUMBER") ||
+		strings.Contains(dt, "INT") ||
+		strings.Contains(dt, "FLOAT") ||
+		dt == "INTEGER" ||
+		dt == "SMALLINT"
 }
 
 func reflectUint(v any) uint64 {
@@ -313,7 +335,7 @@ func unwrapSQLNull(v any) (any, bool) {
 }
 
 func normalizeFloat(val float64, dt string) any {
-	if strings.Contains(dt, "NUMBER") || strings.Contains(dt, "INT") || dt == "INTEGER" || dt == "SMALLINT" {
+	if isOracleNumericType(dt) {
 		if val == math.Trunc(val) && val >= float64(math.MinInt64) && val <= float64(math.MaxInt64) {
 			return int64(val)
 		}
@@ -330,12 +352,4 @@ func isBinaryOracleType(dt string) bool {
 		strings.Contains(dt, "RAW") ||
 		dt == "BFILE" ||
 		strings.Contains(dt, "LONG RAW")
-}
-
-func looksNumeric(s string) bool {
-	if s == "" {
-		return false
-	}
-	_, err := strconv.ParseFloat(s, 64)
-	return err == nil
 }

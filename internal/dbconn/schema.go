@@ -80,6 +80,102 @@ func PrepareDestinationTable(ctx context.Context, db *sql.DB, meta TableMeta) er
 	return nil
 }
 
+// PrepareDestinationTableInferred samples source rows, infers SQL Server column types, then creates the table.
+func PrepareDestinationTableInferred(ctx context.Context, ora, mssql *sql.DB, meta *TableMeta, sampleRows int) error {
+	if meta == nil {
+		return fmt.Errorf("table metadata required")
+	}
+	if sampleRows > 0 && ora != nil {
+		samples, err := FetchOracleSampleRows(ctx, ora, *meta, sampleRows)
+		if err == nil && len(samples) > 0 {
+			meta.Columns = InferMSSQLTypes(meta.Columns, samples)
+		}
+	}
+	if err := EnrichColumnsFromDestination(ctx, mssql, meta); err != nil {
+		return err
+	}
+	return PrepareDestinationTable(ctx, mssql, *meta)
+}
+
+// EnrichColumnsFromDestination fills MSSQLType from an existing SQL Server table when present.
+func EnrichColumnsFromDestination(ctx context.Context, db *sql.DB, meta *TableMeta) error {
+	if meta == nil {
+		return nil
+	}
+	dest := strings.TrimSpace(meta.DestSchema)
+	if dest == "" {
+		dest = "dbo"
+	}
+	types, err := LoadMSSQLColumnTypes(ctx, db, dest, meta.Name)
+	if err != nil {
+		return err
+	}
+	if len(types) == 0 {
+		return nil
+	}
+	for i := range meta.Columns {
+		if t, ok := types[strings.ToUpper(meta.Columns[i].Name)]; ok {
+			meta.Columns[i].MSSQLType = t
+		}
+	}
+	return nil
+}
+
+// LoadMSSQLColumnTypes returns fully formatted SQL Server types for an existing table.
+func LoadMSSQLColumnTypes(ctx context.Context, db *sql.DB, schema, table string) (map[string]string, error) {
+	q := `
+SELECT c.name,
+       t.name,
+       c.max_length,
+       c.precision,
+       c.scale
+FROM sys.columns c
+JOIN sys.types t ON c.user_type_id = t.user_type_id
+JOIN sys.tables tb ON c.object_id = tb.object_id
+JOIN sys.schemas s ON tb.schema_id = s.schema_id
+WHERE s.name = @p1 AND tb.name = @p2`
+	rows, err := db.QueryContext(ctx, q, sql.Named("p1", schema), sql.Named("p2", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var name, typeName string
+		var maxLen int16
+		var prec, scale uint8
+		if err := rows.Scan(&name, &typeName, &maxLen, &prec, &scale); err != nil {
+			return nil, err
+		}
+		out[strings.ToUpper(name)] = formatMSSQLTypeFromSys(typeName, maxLen, prec, scale)
+	}
+	return out, rows.Err()
+}
+
+func formatMSSQLTypeFromSys(typeName string, maxLen int16, prec, scale uint8) string {
+	name := strings.ToUpper(typeName)
+	switch name {
+	case "NVARCHAR", "VARCHAR", "NCHAR", "CHAR", "VARBINARY", "BINARY":
+		if maxLen == -1 {
+			return name + "(MAX)"
+		}
+		n := int(maxLen)
+		if name == "NVARCHAR" || name == "NCHAR" {
+			n = int(maxLen) / 2
+			if n < 1 {
+				n = 1
+			}
+		}
+		return fmt.Sprintf("%s(%d)", name, n)
+	case "DECIMAL", "NUMERIC":
+		return fmt.Sprintf("%s(%d,%d)", name, prec, scale)
+	case "DATETIME2", "DATETIMEOFFSET", "TIME":
+		return fmt.Sprintf("%s(%d)", name, scale)
+	default:
+		return name
+	}
+}
+
 func ensureMSSQLSchema(ctx context.Context, db *sql.DB, schema string) error {
 	schema = strings.TrimSpace(schema)
 	if schema == "" {

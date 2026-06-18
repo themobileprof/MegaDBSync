@@ -88,7 +88,7 @@ func (e *Engine) RunSchemaSample(ctx context.Context, job store.Job, src, dst st
 		job.CurrentTable = destTableLabel(meta)
 		_ = e.Store.UpdateJob(job)
 
-		if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+		if err := dbconn.PrepareDestinationTableInferred(ctx, ora, mssqlDB, &meta, dbconn.SchemaInferenceSampleRows); err != nil {
 			return fmt.Errorf("schema %s: %w", destTableLabel(meta), err)
 		}
 		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Schema created: %s (%d columns)", destTableLabel(meta), len(meta.Columns)))
@@ -121,7 +121,7 @@ func (e *Engine) RunSchemaSample(ctx context.Context, job store.Job, src, dst st
 	var tablesDoneAtomic atomic.Int32
 	tablesDoneAtomic.Store(int32(tablesDone))
 
-	copyOpts := tableCopyOpts{maxRows: sampleRows}
+	copyOpts := tableCopyOpts{JobID: job.ID, maxRows: sampleRows}
 
 	for _, meta := range pending {
 		select {

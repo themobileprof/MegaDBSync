@@ -15,6 +15,7 @@ import (
 type tableCopyOpts struct {
 	dateCol string
 	bounds  DateBounds
+	JobID string
 	upsert  bool
 	maxRows int
 }
@@ -145,7 +146,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 		pending = append(pending, meta)
 	}
 
-	copyOpts := tableCopyOpts{bounds: bounds, upsert: true, maxRows: job.MaxRowsPerTable}
+	copyOpts := tableCopyOpts{JobID: job.ID, bounds: bounds, upsert: true, maxRows: job.MaxRowsPerTable}
 	parallel := max(1, job.ParallelTables)
 	sem := make(chan struct{}, parallel)
 	errCh := make(chan error, len(pending))

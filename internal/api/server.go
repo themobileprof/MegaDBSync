@@ -617,6 +617,21 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "cancelling"})
 		return
 	}
+	if len(parts) > 1 && parts[1] == "insert-failures" && r.Method == http.MethodGet {
+		limit := 100
+		if q := r.URL.Query().Get("limit"); q != "" {
+			if n, err := strconv.Atoi(q); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		recs, err := s.Store.ListInsertFailures(id, limit)
+		if err != nil {
+			writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, recs)
+		return
+	}
 	if r.Method == http.MethodPatch {
 		job, err := s.Store.GetJob(id)
 		if err != nil {
