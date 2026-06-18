@@ -140,6 +140,8 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 		runErr = r.Engine.RunDateRangeBackup(ctx, job, src, dst, srcPass, dstPass)
 	case store.JobIncrementalSync:
 		runErr = r.Engine.RunIncremental(ctx, job, src, dst, srcPass, dstPass)
+	case store.JobSchemaSample:
+		runErr = r.Engine.RunSchemaSample(ctx, job, src, dst, srcPass, dstPass)
 	default:
 		runErr = errUnknownJobType
 	}

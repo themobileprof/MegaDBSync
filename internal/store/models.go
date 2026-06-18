@@ -30,6 +30,7 @@ const (
 	JobBulkFull        JobType = "bulk_full"
 	JobIncrementalSync JobType = "incremental_sync"
 	JobDateRangeBackup JobType = "date_range_backup"
+	JobSchemaSample    JobType = "schema_sample"
 )
 
 type JobStatus string

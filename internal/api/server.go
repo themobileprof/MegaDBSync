@@ -521,6 +521,12 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		if job.Type == "" {
 			job.Type = store.JobBulkFull
 		}
+		if job.Type == store.JobSchemaSample {
+			job.MaxRowsPerTable = migrate.SchemaSampleRowsPerTable
+			if job.ParallelTables <= 0 {
+				job.ParallelTables = 2
+			}
+		}
 		src, err := s.Store.GetConnection(body.SourceID)
 		if err != nil {
 			http.Error(w, "invalid source", http.StatusBadRequest)

@@ -185,6 +185,22 @@ func ListDestinationTables(ctx context.Context, db *sql.DB, schema string) ([]st
 	return out, rows.Err()
 }
 
+// DestinationTableRowCount returns the row count for a user table in the effective destination schema.
+func DestinationTableRowCount(ctx context.Context, db *sql.DB, schema, table string) (int64, error) {
+	schema = EffectiveDestSchema(schema)
+	q := `
+SELECT ISNULL(SUM(p.rows), 0)
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
+WHERE s.name = @p1 AND t.name = @p2`
+	var count int64
+	if err := db.QueryRowContext(ctx, q, sql.Named("p1", schema), sql.Named("p2", table)).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // FormatBulkBlockedError builds an actionable message when bulk migration is refused.
 func FormatBulkBlockedError(schema string, count int, tables []string, resumableJobID, resumableStatus string) string {
 	scope := EffectiveDestSchema(schema)

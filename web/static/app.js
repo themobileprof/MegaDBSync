@@ -189,6 +189,7 @@ function eventSourceLabel(ev, jobById) {
   if (!ev.job_id) return 'Scheduler';
   const job = jobById[ev.job_id];
   if (!job) return 'Job';
+  if (job.type === 'schema_sample') return 'Schema sample';
   if (job.type === 'incremental_sync') return 'Incremental';
   return (job.type || 'job').replace(/_/g, ' ');
 }
@@ -223,6 +224,15 @@ function renderScheduleCard(schedule, engineOn) {
 
 function fmtJobDetail(job) {
   const base = (job.type || '').replace(/_/g, ' ');
+  if (job.type === 'schema_sample') {
+    if (job.current_phase === 'schema') {
+      return `${base} · creating tables${job.current_table ? ' · ' + job.current_table : ''}`;
+    }
+    if (job.current_phase === 'sample' || job.status === 'running') {
+      return `${base} · copying 5 sample rows per table${job.current_table ? ' · ' + job.current_table : ''}`;
+    }
+    return `${base} · ${fmtNum(job.rows_done)} sample row(s) across ${job.tables_done} table(s)`;
+  }
   if (job.type === 'incremental_sync') {
     if (job.status === 'running') {
       const table = job.current_table ? ` · ${job.current_table}` : '';
@@ -241,6 +251,12 @@ function fmtJobDetail(job) {
 }
 
 function fmtTaskProgress(t) {
+  if (t.sync_mode === 'schema_sample') {
+    if (t.status === 'completed' && t.rows_done === 0) {
+      return 'schema only / skipped';
+    }
+    return `${fmtNum(t.rows_done)} sample row(s)`;
+  }
   if (t.sync_mode && t.sync_mode !== 'date_backup') {
     const mode = t.sync_mode === 'ora_rowscn' ? 'SCN' : (t.watermark_col || t.sync_mode);
     if (t.status === 'completed' && t.rows_done === 0) {
@@ -294,7 +310,9 @@ function renderDashboard(data) {
     card.classList.remove('hidden');
     const paused = job.status === 'paused' || job.status === 'failed';
     $('#status-headline').textContent = job.status === 'running'
-      ? (job.type === 'incremental_sync' ? 'Incremental sync running' : 'Migration in progress')
+      ? (job.type === 'incremental_sync' ? 'Incremental sync running'
+        : job.type === 'schema_sample' ? 'Schema sample running'
+        : 'Migration in progress')
       : titleCase(job.status);
     $('#status-detail').textContent = paused && job.error_message
       ? job.error_message
@@ -584,8 +602,21 @@ function toggleDateRangeFields() {
   $('#date-range-fields').classList.toggle('hidden', !show);
 }
 
-$('#job-type').addEventListener('change', toggleDateRangeFields);
+function toggleJobTypeFields() {
+  const type = $('#job-type').value;
+  const isDate = type === 'date_range_backup';
+  const isSample = type === 'schema_sample';
+  $('#date-range-fields').classList.toggle('hidden', !isDate);
+  $('#job-sample-note').classList.toggle('hidden', !isSample);
+  $('#job-advanced-fields').classList.toggle('hidden', isSample);
+}
+
+$('#job-type').addEventListener('change', () => {
+  toggleDateRangeFields();
+  toggleJobTypeFields();
+});
 toggleDateRangeFields();
+toggleJobTypeFields();
 
 $('#job-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -601,6 +632,11 @@ $('#job-form').addEventListener('submit', async (e) => {
       delete body.date_from;
       delete body.date_to;
       delete body.date_column;
+    }
+    if (body.type === 'schema_sample') {
+      delete body.batch_size;
+      delete body.max_rows_per_table;
+      delete body.chunk_timeout_sec;
     }
     body.start = true;
     await api('/jobs', { method: 'POST', body: JSON.stringify(body) });
