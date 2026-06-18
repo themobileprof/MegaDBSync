@@ -21,6 +21,7 @@ type TableMeta struct {
 	RowCountKnown    bool
 	RowCountApprox   bool
 	RowCountExceeded bool
+	DateCol          string
 	WatermarkCol     string
 	SyncMode         string
 }

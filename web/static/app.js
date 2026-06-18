@@ -150,7 +150,7 @@ function renderDashboard(data) {
     $('#status-headline').textContent = job.status === 'running' ? 'Migration in progress' : titleCase(job.status);
     $('#status-detail').textContent = paused && job.error_message
       ? job.error_message
-      : `${job.type.replace('_', ' ')} · started ${fmtTime(job.started_at)}`;
+      : `${job.type.replace(/_/g, ' ')}${job.date_from || job.date_to ? ` · ${fmtDateRange(job)}` : ''} · started ${fmtTime(job.started_at)}`;
     $('#job-phase').textContent = job.current_phase || job.status;
     $('#job-table').textContent = job.current_table || '';
     $('#job-rows').textContent = fmtNum(job.rows_done);
@@ -169,6 +169,13 @@ function renderDashboard(data) {
       $('#paused-batch-size').value = job.batch_size || 50000;
       $('#paused-parallel').value = job.parallel_tables || 2;
       $('#paused-chunk-timeout').value = job.chunk_timeout_sec || '';
+      const showDates = job.type === 'date_range_backup';
+      $('#paused-date-fields').classList.toggle('hidden', !showDates);
+      if (showDates) {
+        $('#paused-date-from').value = (job.date_from || '').slice(0, 10);
+        $('#paused-date-to').value = (job.date_to || '').slice(0, 10);
+        $('#paused-date-column').value = job.date_column || '';
+      }
     }
   }
 
@@ -184,6 +191,7 @@ function renderDashboard(data) {
       const progress = t.source_row_count_known
         ? `${fmtNum(t.rows_done)} / ${t.source_row_count_exceeded ? fmtNum(t.source_row_count) + '+' : fmtNum(t.source_row_count)} copied`
         : `${fmtNum(t.rows_done)} copied`;
+      const dateCol = t.sync_mode === 'date_backup' && t.watermark_col ? ` · ${esc(t.watermark_col)}` : '';
       return `
       <div class="task-item ${t.status}">
         <div class="task-meta">
@@ -191,7 +199,7 @@ function renderDashboard(data) {
           <span class="badge ${t.status}">${t.status}</span>
         </div>
         <div class="task-meta muted">
-          <span>${fmtNumRows(t)}</span>
+          <span>${fmtNumRows(t)}${dateCol}</span>
           <span>${progress}</span>
           <span>${t.rows_per_sec ? t.rows_per_sec.toFixed(0) + '/s' : ''}</span>
         </div>
@@ -361,6 +369,21 @@ $('#test-conn-btn').addEventListener('click', async () => {
   }
 });
 
+function fmtDateRange(job) {
+  if (!job.date_from && !job.date_to) return 'all records';
+  if (job.date_from && job.date_to) return `${job.date_from.slice(0, 10)} – ${job.date_to.slice(0, 10)}`;
+  if (job.date_from) return `from ${job.date_from.slice(0, 10)}`;
+  return `through ${job.date_to.slice(0, 10)}`;
+}
+
+function toggleDateRangeFields() {
+  const show = $('#job-type').value === 'date_range_backup';
+  $('#date-range-fields').classList.toggle('hidden', !show);
+}
+
+$('#job-type').addEventListener('change', toggleDateRangeFields);
+toggleDateRangeFields();
+
 $('#job-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -368,6 +391,11 @@ $('#job-form').addEventListener('submit', async (e) => {
   body.batch_size = parseInt(body.batch_size || '0', 10);
   body.parallel_tables = parseInt(body.parallel_tables || '0', 10);
   body.chunk_timeout_sec = parseInt(body.chunk_timeout_sec || '0', 10);
+  if (body.type !== 'date_range_backup') {
+    delete body.date_from;
+    delete body.date_to;
+    delete body.date_column;
+  }
   body.start = true;
   try {
     await api('/jobs', { method: 'POST', body: JSON.stringify(body) });
@@ -415,13 +443,19 @@ async function resumeJob(jobId) {
 $('#resume-job-btn').addEventListener('click', async () => {
   if (!activeJobId) return;
   try {
+    const patch = {
+      batch_size: parseInt($('#paused-batch-size').value, 10),
+      parallel_tables: parseInt($('#paused-parallel').value, 10),
+      chunk_timeout_sec: parseInt($('#paused-chunk-timeout').value || '0', 10),
+    };
+    if (!$('#paused-date-fields').classList.contains('hidden')) {
+      patch.date_from = $('#paused-date-from').value;
+      patch.date_to = $('#paused-date-to').value;
+      patch.date_column = $('#paused-date-column').value.trim();
+    }
     await api('/jobs/' + activeJobId, {
       method: 'PATCH',
-      body: JSON.stringify({
-        batch_size: parseInt($('#paused-batch-size').value, 10),
-        parallel_tables: parseInt($('#paused-parallel').value, 10),
-        chunk_timeout_sec: parseInt($('#paused-chunk-timeout').value || '0', 10),
-      }),
+      body: JSON.stringify(patch),
     });
     await api('/jobs/' + activeJobId + '/start', { method: 'POST' });
   } catch (err) {

@@ -29,6 +29,7 @@ type JobType string
 const (
 	JobBulkFull        JobType = "bulk_full"
 	JobIncrementalSync JobType = "incremental_sync"
+	JobDateRangeBackup JobType = "date_range_backup"
 )
 
 type JobStatus string
@@ -52,6 +53,9 @@ type Job struct {
 	ParallelTables   int       `json:"parallel_tables"`
 	ChunkTimeoutSec  int       `json:"chunk_timeout_sec"`
 	TableFilter      string    `json:"table_filter"`
+	DateColumn       string    `json:"date_column,omitempty"`
+	DateFrom         string    `json:"date_from,omitempty"`
+	DateTo           string    `json:"date_to,omitempty"`
 	ErrorMessage    string    `json:"error_message,omitempty"`
 	RowsTotal       int64     `json:"rows_total"`
 	RowsDone        int64     `json:"rows_done"`

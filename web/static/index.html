@@ -87,6 +87,11 @@
             <label>Batch size<input id="paused-batch-size" type="number" min="1000" step="1000"></label>
             <label>Parallel tables<input id="paused-parallel" type="number" min="1" max="8"></label>
             <label>Chunk timeout (sec)<input id="paused-chunk-timeout" type="number" min="30" step="30" title="Max seconds per batch before timeout"></label>
+            <div id="paused-date-fields" class="form-grid span-all hidden">
+              <label>Date from<input id="paused-date-from" type="date"></label>
+              <label>Date to<input id="paused-date-to" type="date"></label>
+              <label>Date column<input id="paused-date-column" placeholder="Auto-detect"></label>
+            </div>
             <div class="form-actions">
               <button class="btn primary" type="button" id="resume-job-btn">Save &amp; resume</button>
             </div>
@@ -156,8 +161,9 @@
               <select name="dest_id" id="job-dest" required></select>
             </label>
             <label>Job type
-              <select name="type">
+              <select name="type" id="job-type">
                 <option value="bulk_full">Bulk migration (empty destination only)</option>
+                <option value="date_range_backup">Date range backup (upsert, optional dates)</option>
                 <option value="incremental_sync">Incremental sync</option>
               </select>
             </label>
@@ -165,11 +171,16 @@
             <label>Parallel tables<input name="parallel_tables" type="number" min="1" max="8" placeholder="2"></label>
             <label>Chunk timeout (sec)<input name="chunk_timeout_sec" type="number" min="30" step="30" placeholder="300" title="Max seconds per batch; triggers pause on timeout"></label>
             <label>Table filter (optional)<input name="table_filter" placeholder="SCHEMA.TABLE or TABLE, comma-separated"></label>
+            <div id="date-range-fields" class="form-grid span-all hidden">
+              <label>Date from (optional)<input name="date_from" type="date" title="YYYY-MM-DD — leave empty for no lower bound"></label>
+              <label>Date to (optional)<input name="date_to" type="date" title="YYYY-MM-DD — leave empty for no upper bound"></label>
+              <label>Date column (optional)<input name="date_column" placeholder="Auto-detect CREATED_AT, etc."></label>
+            </div>
             <div class="form-actions">
               <button class="btn primary" type="submit">Create &amp; start</button>
             </div>
           </form>
-          <p class="muted note">Tables migrate smallest-first so heavy tables run last. Bulk jobs refuse a non-empty destination on first start — resume a paused job to continue. Pause anytime to change batch size or parallelism.</p>
+          <p class="muted note">Tables migrate smallest-first. <strong>Date range backup</strong> upserts into an existing destination — leave both dates empty to copy all rows, or set from/to for a window (one day, months, or years). Bulk migration requires an empty destination.</p>
         </div>
         <div class="card">
           <h3>Recent jobs</h3>

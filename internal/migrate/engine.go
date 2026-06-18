@@ -160,7 +160,7 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task)
+			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task, tableCopyOpts{})
 			if err != nil {
 				if ctx.Err() != nil {
 					task.Status = store.JobPaused
@@ -469,7 +469,7 @@ func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID stri
 	return total, cur, nil
 }
 
-func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, startRowID string, chunkTimeout time.Duration, task *store.TableTask) (int64, error) {
+func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, startRowID string, chunkTimeout time.Duration, task *store.TableTask, opts tableCopyOpts) (int64, error) {
 	colNames := make([]string, len(meta.Columns))
 	for i, c := range meta.Columns {
 		colNames[i] = c.Name
@@ -491,7 +491,7 @@ func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbcon
 		default:
 		}
 		chunkCtx, cancel := context.WithTimeout(ctx, chunkTimeout)
-		rows, nextRowID, err := e.fetchFullChunk(chunkCtx, ora, meta, colNames, batch, lastRowID)
+		rows, nextRowID, err := e.fetchFullChunk(chunkCtx, ora, meta, colNames, batch, lastRowID, opts.dateCol, opts.bounds)
 		if err != nil {
 			cancel()
 			if task != nil {
@@ -504,7 +504,7 @@ func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbcon
 			cancel()
 			break
 		}
-		n, err := dbconn.BulkInsertMSSQL(chunkCtx, mssqlDB, meta.Schema, meta.Name, colNames, rows)
+		n, err := e.writeChunk(chunkCtx, mssqlDB, meta, colNames, rows, opts)
 		cancel()
 		if err != nil {
 			if task != nil {
@@ -577,21 +577,43 @@ func (e *Engine) captureSyncHighWater(ctx context.Context, ora *sql.DB, meta dbc
 	return st, nil
 }
 
-func (e *Engine) fetchFullChunk(ctx context.Context, ora *sql.DB, meta dbconn.TableMeta, cols []string, batch int, lastRowID string) ([][]any, string, error) {
+func (e *Engine) writeChunk(ctx context.Context, mssqlDB *sql.DB, meta dbconn.TableMeta, colNames []string, rows [][]any, opts tableCopyOpts) (int64, error) {
+	if opts.upsert {
+		return dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, colNames, meta.PrimaryKeys, rows)
+	}
+	return dbconn.BulkInsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, colNames, rows)
+}
+
+func (e *Engine) fetchFullChunk(ctx context.Context, ora *sql.DB, meta dbconn.TableMeta, cols []string, batch int, lastRowID, dateCol string, bounds DateBounds) ([][]any, string, error) {
 	colList := strings.Join(quoteOracleCols(cols), ", ")
 	schema := quoteOracleIdent(meta.Schema)
 	table := quoteOracleIdent(meta.Name)
 
-	var q string
+	var conds []string
 	var args []any
-	if lastRowID == "" {
-		q = fmt.Sprintf(`SELECT %s, ROWIDTOCHAR(ROWID) AS MDAS_RID FROM %s.%s ORDER BY ROWID FETCH NEXT %d ROWS ONLY`,
-			colList, schema, table, batch)
-	} else {
-		q = fmt.Sprintf(`SELECT %s, ROWIDTOCHAR(ROWID) AS MDAS_RID FROM %s.%s WHERE ROWID > CHARTOROWID(:1) ORDER BY ROWID FETCH NEXT %d ROWS ONLY`,
-			colList, schema, table, batch)
-		args = []any{lastRowID}
+	n := 1
+	if bounds.Active && dateCol != "" {
+		if bounds.HasFrom {
+			conds = append(conds, fmt.Sprintf("%s >= :%d", quoteOracleIdent(dateCol), n))
+			args = append(args, bounds.From)
+			n++
+		}
+		if bounds.HasTo {
+			conds = append(conds, fmt.Sprintf("%s < :%d", quoteOracleIdent(dateCol), n))
+			args = append(args, bounds.ToExclusive)
+			n++
+		}
 	}
+	if lastRowID != "" {
+		conds = append(conds, fmt.Sprintf("ROWID > CHARTOROWID(:%d)", n))
+		args = append(args, lastRowID)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	q := fmt.Sprintf(`SELECT %s, ROWIDTOCHAR(ROWID) AS MDAS_RID FROM %s.%s %s ORDER BY ROWID FETCH NEXT %d ROWS ONLY`,
+		colList, schema, table, where, batch)
 
 	raw, err := queryRows(ctx, ora, q, args...)
 	if err != nil {

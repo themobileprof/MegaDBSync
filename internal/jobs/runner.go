@@ -135,6 +135,8 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 	switch job.Type {
 	case store.JobBulkFull:
 		runErr = r.Engine.RunBulk(ctx, job, src, dst, srcPass, dstPass)
+	case store.JobDateRangeBackup:
+		runErr = r.Engine.RunDateRangeBackup(ctx, job, src, dst, srcPass, dstPass)
 	case store.JobIncrementalSync:
 		runErr = r.Engine.RunIncremental(ctx, job, src, dst, srcPass, dstPass)
 	default:

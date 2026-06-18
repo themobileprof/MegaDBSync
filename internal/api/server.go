@@ -10,6 +10,7 @@ import (
 	"github.com/themobileprof/megadbsync/internal/auth"
 	"github.com/themobileprof/megadbsync/internal/dbconn"
 	"github.com/themobileprof/megadbsync/internal/jobs"
+	"github.com/themobileprof/megadbsync/internal/migrate"
 	"github.com/themobileprof/megadbsync/internal/store"
 )
 
@@ -309,6 +310,9 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			ParallelTables  int           `json:"parallel_tables"`
 			ChunkTimeoutSec int           `json:"chunk_timeout_sec"`
 			TableFilter     string        `json:"table_filter"`
+			DateColumn      string        `json:"date_column"`
+			DateFrom        string        `json:"date_from"`
+			DateTo          string        `json:"date_to"`
 			Start           bool          `json:"start"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -322,10 +326,15 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		if body.ParallelTables <= 0 {
 			body.ParallelTables = st.DefaultParallel
 		}
+		if _, err := migrate.ParseDateBounds(body.DateFrom, body.DateTo); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		job := store.Job{
 			Type: body.Type, SourceID: body.SourceID, DestID: body.DestID,
 			BatchSize: body.BatchSize, ParallelTables: body.ParallelTables,
 			ChunkTimeoutSec: body.ChunkTimeoutSec, TableFilter: body.TableFilter,
+			DateColumn: body.DateColumn, DateFrom: body.DateFrom, DateTo: body.DateTo,
 		}
 		if job.Type == "" {
 			job.Type = store.JobBulkFull
@@ -421,9 +430,12 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			BatchSize       int `json:"batch_size"`
-			ParallelTables  int `json:"parallel_tables"`
-			ChunkTimeoutSec int `json:"chunk_timeout_sec"`
+			BatchSize       int    `json:"batch_size"`
+			ParallelTables  int    `json:"parallel_tables"`
+			ChunkTimeoutSec int    `json:"chunk_timeout_sec"`
+			DateColumn      string `json:"date_column"`
+			DateFrom        string `json:"date_from"`
+			DateTo          string `json:"date_to"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -442,7 +454,15 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 				body.ParallelTables = st.DefaultParallel
 			}
 		}
-		if err := s.Store.UpdateJobSettings(id, body.BatchSize, body.ParallelTables, body.ChunkTimeoutSec); err != nil {
+		dateColumn := body.DateColumn
+		if dateColumn == "" {
+			dateColumn = job.DateColumn
+		}
+		if _, err := migrate.ParseDateBounds(body.DateFrom, body.DateTo); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.Store.UpdateJobSettings(id, body.BatchSize, body.ParallelTables, body.ChunkTimeoutSec, dateColumn, body.DateFrom, body.DateTo); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
