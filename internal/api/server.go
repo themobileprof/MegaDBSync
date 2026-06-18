@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -328,7 +329,7 @@ func (s *Server) handleTestConnectionSequence(w http.ResponseWriter, r *http.Req
 
 	opts := dbconn.DefaultConnectOpts()
 	timeout := time.Duration(opts.TimeoutSec) * time.Second
-	steps := make([]connectionTestStep, 0, 4)
+	steps := make([]connectionTestStep, 0, 6)
 	addStep := func(name string, started time.Time, status, msg string) {
 		steps = append(steps, connectionTestStep{
 			Name:       name,
@@ -389,23 +390,36 @@ func (s *Server) handleTestConnectionSequence(w http.ResponseWriter, r *http.Req
 	}
 	addStep("Database login", start, "ok", "Connected and ping successful")
 
+	db, err := dbconn.OpenFromParams(r.Context(), body.Connection, pass)
+	if err != nil {
+		start = time.Now()
+		addStep("Schema access", start, "error", err.Error())
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": err.Error()})
+		return
+	}
+	defer db.Close()
+
+	schemaName := strings.TrimSpace(body.Schema)
+	if schemaName == "" {
+		addStep("Schema access", time.Now(), "skipped", "No schema specified (optional)")
+	} else {
+		start = time.Now()
+		tableCount, err := dbconn.VerifySchema(r.Context(), db, body.Type, schemaName)
+		if err != nil {
+			addStep("Schema access", start, "error", err.Error())
+			writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": err.Error()})
+			return
+		}
+		addStep("Schema access", start, "ok", fmt.Sprintf("Schema %q found — %d table(s) visible", schemaName, tableCount))
+	}
+
 	resp := map[string]any{
 		"status": "ok",
 		"steps":  steps,
 	}
 	if body.Type == store.ConnMSSQL {
 		start = time.Now()
-		db, err := dbconn.OpenMSSQL(r.Context(), body.Connection, pass)
-		if err != nil {
-			addStep("Destination scan", start, "error", err.Error())
-			resp["status"] = "error"
-			resp["message"] = err.Error()
-			resp["steps"] = steps
-			writeJSON(w, resp)
-			return
-		}
 		count, err := dbconn.DestinationMustBeEmpty(r.Context(), db, body.Schema)
-		_ = db.Close()
 		if err != nil {
 			addStep("Destination scan", start, "error", err.Error())
 			resp["status"] = "error"
@@ -414,13 +428,26 @@ func (s *Server) handleTestConnectionSequence(w http.ResponseWriter, r *http.Req
 			writeJSON(w, resp)
 			return
 		}
-		addStep("Destination scan", start, "ok", "Destination metadata check successful")
+		msg := "Destination metadata check successful"
+		if schemaName != "" {
+			msg = fmt.Sprintf("Schema %q has %d table(s) — bulk migration %s", schemaName, count, bulkMigrationNote(count))
+		} else if count > 0 {
+			msg = fmt.Sprintf("Destination has %d table(s) — bulk migration will be blocked until empty", count)
+		}
+		addStep("Destination scan", start, "ok", msg)
 		resp["table_count"] = count
 		resp["empty"] = count == 0
 		resp["steps"] = steps
 	}
 
 	writeJSON(w, resp)
+}
+
+func bulkMigrationNote(tableCount int) string {
+	if tableCount == 0 {
+		return "can proceed (empty)"
+	}
+	return "blocked until empty"
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {

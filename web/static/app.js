@@ -372,7 +372,7 @@ function renderConnTestTable(steps) {
   body.innerHTML = steps.map((s) => `
     <tr>
       <td>${esc(s.name)}</td>
-      <td><span class="badge ${s.status === 'ok' ? 'completed' : 'failed'}">${esc(s.status)}</span></td>
+      <td><span class="badge ${s.status === 'ok' ? 'completed' : s.status === 'skipped' ? 'pending' : 'failed'}">${esc(s.status)}</span></td>
       <td>${fmtNum(s.duration_ms)} ms</td>
       <td class="${s.status === 'ok' ? 'muted' : 'error'}">${esc(s.message || '')}</td>
     </tr>
