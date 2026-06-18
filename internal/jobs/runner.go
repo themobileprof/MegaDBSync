@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -226,7 +227,7 @@ func (s *Scheduler) maybeRunIncremental() {
 	if err != nil || st.ScheduleCron == "" || !st.EngineEnabled {
 		return
 	}
-	if !cronDue(st.ScheduleCron, time.Now()) {
+	if !CronDue(st.ScheduleCron, time.Now()) {
 		return
 	}
 	if st.ScheduleSourceID == "" || st.ScheduleDestID == "" {
@@ -234,6 +235,7 @@ func (s *Scheduler) maybeRunIncremental() {
 	}
 	active, _ := s.Store.ActiveJob()
 	if active != nil {
+		_ = s.Store.LogEvent("", "warn", fmt.Sprintf("Scheduled incremental sync skipped (%s) — %s job already active", ScheduleLabel(st.ScheduleCron), active.Type))
 		return
 	}
 	job := store.Job{
@@ -244,25 +246,11 @@ func (s *Scheduler) maybeRunIncremental() {
 		ParallelTables: st.DefaultParallel,
 	}
 	job, _ = s.Store.CreateJob(job)
+	_ = s.Store.LogEvent("", "info", fmt.Sprintf("Scheduled incremental sync started (%s) — see Jobs tab or Activity log below", ScheduleLabel(st.ScheduleCron)))
 	_ = s.Store.LogEvent(job.ID, "info", "Scheduled incremental sync started")
-	_ = s.Runner.StartJob(job.ID)
-}
-
-// cronDue supports simple patterns: "@hourly", "@daily", or "0 */N * * *" minute field with */N.
-func cronDue(expr string, now time.Time) bool {
-	switch expr {
-	case "@hourly":
-		return now.Minute() == 0
-	case "@daily":
-		return now.Hour() == 2 && now.Minute() == 0
-	case "0 */4 * * *":
-		return now.Minute() == 0 && now.Hour()%4 == 0
-	case "0 */6 * * *":
-		return now.Minute() == 0 && now.Hour()%6 == 0
-	case "0 */12 * * *":
-		return now.Minute() == 0 && now.Hour()%12 == 0
-	default:
-		return now.Minute() == 0 && now.Hour()%4 == 0
+	if err := s.Runner.StartJob(job.ID); err != nil {
+		_ = s.Store.LogEvent("", "error", fmt.Sprintf("Scheduled incremental sync failed to start: %s", err.Error()))
+		_ = s.Store.LogEvent(job.ID, "error", err.Error())
 	}
 }
 

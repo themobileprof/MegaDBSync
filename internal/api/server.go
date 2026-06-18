@@ -134,7 +134,32 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.enrichDashboard(&ds)
 	writeJSON(w, ds)
+}
+
+func (s *Server) enrichDashboard(ds *store.DashboardState) {
+	st, err := s.Store.GetSettings()
+	if err != nil || st.ScheduleCron == "" || st.ScheduleSourceID == "" || st.ScheduleDestID == "" {
+		return
+	}
+	now := time.Now().UTC()
+	ds.Schedule = &store.ScheduleInfo{
+		Cron:      st.ScheduleCron,
+		Label:     jobs.ScheduleLabel(st.ScheduleCron),
+		SourceID:  st.ScheduleSourceID,
+		DestID:    st.ScheduleDestID,
+		Armed:     st.EngineEnabled,
+		NextRunAt: jobs.NextCronRun(st.ScheduleCron, now),
+	}
+	for i := range ds.RecentJobs {
+		j := ds.RecentJobs[i]
+		if j.Type == store.JobIncrementalSync && j.SourceID == st.ScheduleSourceID && j.DestID == st.ScheduleDestID {
+			copy := j
+			ds.Schedule.LastJob = &copy
+			break
+		}
+	}
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +183,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		s.enrichDashboard(&ds)
 		b, _ := json.Marshal(ds)
 		_, _ = io.WriteString(w, "event: status\ndata: ")
 		_, _ = w.Write(b)

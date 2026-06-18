@@ -27,6 +27,52 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function showToast(message, kind = 'ok', ms = 2600) {
+  const el = $('#action-toast');
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'action-toast' + (kind === 'error' ? ' error' : '');
+  el.classList.remove('hidden');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+
+async function withBtn(btn, fn, opts = {}) {
+  if (!btn || btn.disabled || btn.classList.contains('busy')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add('busy', 'pressed');
+  if (opts.pending) btn.textContent = opts.pending;
+  setTimeout(() => btn.classList.remove('pressed'), 180);
+  try {
+    const result = await fn();
+    btn.classList.remove('busy');
+    btn.classList.add('done');
+    btn.textContent = opts.success || orig;
+    if (opts.toast) showToast(opts.toast);
+    clearTimeout(btn._resetTimer);
+    btn._resetTimer = setTimeout(() => {
+      btn.classList.remove('done');
+      btn.textContent = orig;
+      btn.disabled = false;
+    }, opts.holdMs ?? 1600);
+    return result;
+  } catch (err) {
+    btn.classList.remove('busy');
+    btn.classList.add('error-flash');
+    btn.textContent = opts.errorLabel || 'Failed';
+    if (opts.toast !== false) showToast(err.message, 'error');
+    clearTimeout(btn._resetTimer);
+    btn._resetTimer = setTimeout(() => {
+      btn.classList.remove('error-flash');
+      btn.textContent = orig;
+      btn.disabled = false;
+    }, 2200);
+    if (!opts.rethrow) return;
+    throw err;
+  }
+}
+
 function showAuth(setup = false) {
   authed = false;
   stopSSE();
@@ -65,9 +111,10 @@ async function bootstrap() {
 
 $('#auth-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const password = $('#password').value;
-  $('#auth-error').classList.add('hidden');
-  try {
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const password = $('#password').value;
+    $('#auth-error').classList.add('hidden');
     const setup = $('#auth-title').textContent.includes('Create');
     await api(setup ? '/setup' : '/login', {
       method: 'POST',
@@ -75,15 +122,17 @@ $('#auth-form').addEventListener('submit', async (e) => {
     });
     $('#password').value = '';
     showMain();
-  } catch (err) {
+  }, { pending: 'Signing in…', success: 'Signed in', toast: false, rethrow: true }).catch((err) => {
     $('#auth-error').textContent = err.message;
     $('#auth-error').classList.remove('hidden');
-  }
+  });
 });
 
-$('#logout-btn').addEventListener('click', async () => {
-  await api('/logout', { method: 'POST' });
-  showAuth(false);
+$('#logout-btn').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
+    await api('/logout', { method: 'POST' });
+    showAuth(false);
+  }, { pending: 'Signing out…', success: 'Signed out', toast: 'Signed out' });
 });
 
 $$('.tab').forEach((tab) => {
@@ -113,6 +162,63 @@ function fmtNumRows(row) {
 function fmtTime(ts) {
   if (!ts) return '';
   return new Date(ts).toLocaleString();
+}
+
+function fmtRelative(ts) {
+  if (!ts) return 'never';
+  const sec = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+  if (sec < 0) return 'soon';
+  if (sec < 60) return sec <= 5 ? 'just now' : `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${hr} hr ago`;
+  return fmtTime(ts);
+}
+
+function fmtScheduleLastJob(job) {
+  if (!job) return 'none yet';
+  const when = job.completed_at || job.started_at || job.created_at;
+  const detail = job.status === 'completed' && job.rows_done === 0
+    ? 'no changes'
+    : `${fmtNum(job.rows_done)} row(s) · ${job.status}`;
+  return `${fmtRelative(when)} — ${detail}`;
+}
+
+function eventSourceLabel(ev, jobById) {
+  if (!ev.job_id) return 'Scheduler';
+  const job = jobById[ev.job_id];
+  if (!job) return 'Job';
+  if (job.type === 'incremental_sync') return 'Incremental';
+  return (job.type || 'job').replace(/_/g, ' ');
+}
+
+function renderScheduleCard(schedule, engineOn) {
+  const card = $('#schedule-card');
+  if (!schedule) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+  const armed = schedule.armed && engineOn;
+  const badge = $('#schedule-badge');
+  badge.textContent = armed ? 'Armed' : (engineOn ? 'Waiting for connections' : 'Engine stopped');
+  badge.className = 'badge ' + (armed ? 'running' : 'cancelled');
+  $('#schedule-label').textContent = schedule.label || schedule.cron || '';
+  $('#schedule-next').textContent = armed && schedule.next_run_at
+    ? fmtTime(schedule.next_run_at)
+    : (engineOn ? '—' : 'Start engine first');
+  $('#schedule-last').textContent = fmtScheduleLastJob(schedule.last_job);
+  const detail = $('#schedule-detail');
+  if (!engineOn) {
+    detail.textContent = 'Start the migration engine to enable automatic incremental sync on this schedule.';
+  } else if (!schedule.source_id || !schedule.dest_id) {
+    detail.textContent = 'Pick source and destination connections in Settings, then save.';
+  } else if (armed) {
+    detail.textContent = 'Runs appear in Activity log below and on the Jobs tab. The dashboard updates live when each scheduled run starts.';
+  } else {
+    detail.textContent = '';
+  }
 }
 
 function fmtJobDetail(job) {
@@ -166,6 +272,8 @@ function renderDashboard(data) {
   const job = data.active_job;
   const card = $('#active-job-card');
   activeJobId = job ? job.id : null;
+  const schedule = data.schedule;
+  renderScheduleCard(schedule, engineOn);
   if (!job) {
     if (!engineOn) {
       $('#status-headline').textContent = 'Engine stopped';
@@ -173,9 +281,13 @@ function renderDashboard(data) {
     } else if (working) {
       $('#status-headline').textContent = 'Working';
       $('#status-detail').textContent = 'Background migration activity in progress.';
+    } else if (schedule && schedule.armed) {
+      $('#status-headline').textContent = 'Scheduled sync armed';
+      const next = schedule.next_run_at ? fmtTime(schedule.next_run_at) : '—';
+      $('#status-detail').textContent = `Incremental sync runs ${(schedule.label || '').toLowerCase()}. Next check at ${next}. Watch Activity log for each run.`;
     } else {
       $('#status-headline').textContent = 'Ready';
-      $('#status-detail').textContent = 'Engine is running. Create a job on the Jobs tab when you are ready.';
+      $('#status-detail').textContent = 'Engine is running. Create a job on the Jobs tab or configure a schedule in Settings.';
     }
     card.classList.add('hidden');
   } else {
@@ -246,18 +358,27 @@ function renderDashboard(data) {
     }).join('');
   }
 
-  const events = (data.events || []).slice().reverse();
+  const events = (data.events || []).slice();
+  const jobById = Object.fromEntries((data.recent_jobs || []).map(j => [j.id, j]));
   const logEl = $('#event-log');
   if (!events.length) {
     logEl.className = 'event-log empty-state';
-    logEl.textContent = 'Waiting for events…';
+    logEl.textContent = schedule && schedule.armed
+      ? 'Waiting for the first scheduled run…'
+      : 'Waiting for events…';
   } else {
     logEl.className = 'event-log';
-    logEl.innerHTML = events.map(ev => `
+    logEl.innerHTML = events.map(ev => {
+      const src = eventSourceLabel(ev, jobById);
+      return `
       <div class="event-item ${esc(ev.level)}">
+        <div class="event-head">
+          <span class="event-source">${esc(src)}</span>
+          <span class="event-time">${fmtTime(ev.created_at)}</span>
+        </div>
         <div>${esc(ev.message)}</div>
-        <div class="event-time">${fmtTime(ev.created_at)}</div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   if (Array.isArray(data.connections)) {
@@ -296,8 +417,10 @@ function renderConnections(list) {
   el.querySelectorAll('[data-del]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Delete this connection?')) return;
-      await api('/connections/' + btn.dataset.del, { method: 'DELETE' });
-      await loadConnections();
+      await withBtn(btn, async () => {
+        await api('/connections/' + btn.dataset.del, { method: 'DELETE' });
+        await loadConnections();
+      }, { pending: 'Deleting…', success: 'Deleted', toast: 'Connection deleted' });
     });
   });
 }
@@ -313,15 +436,15 @@ function renderJobs(list) {
   el.innerHTML = list.map(j => `
     <div class="job-item">
       <div class="task-meta">
-        <strong>${esc(j.type.replace('_', ' '))}</strong>
+        <strong>${esc(j.type.replace(/_/g, ' '))}</strong>
         <span class="badge ${j.status}">${j.status}</span>
         ${j.status === 'paused' || j.status === 'failed' ? `<button class="btn primary" type="button" data-resume="${j.id}" style="margin-left:auto">Resume</button>` : ''}
       </div>
-      <div class="muted">${fmtNum(j.rows_done)} rows · ${j.tables_done}/${j.tables_total} tables · ${fmtTime(j.created_at)}</div>
+      <div class="muted">${fmtNum(j.rows_done)} rows · ${j.tables_done}/${j.tables_total} tables · ${fmtTime(j.created_at)}${j.type === 'incremental_sync' && j.status === 'completed' && j.rows_done === 0 ? ' · no changes' : ''}</div>
       ${j.error_message ? `<div class="error">${esc(j.error_message)}</div>` : ''}
     </div>`).join('');
   el.querySelectorAll('[data-resume]').forEach(btn => {
-    btn.addEventListener('click', () => resumeJob(btn.dataset.resume));
+    btn.addEventListener('click', () => resumeJob(btn.dataset.resume, btn));
   });
 }
 
@@ -390,17 +513,17 @@ updateConnAuthUI();
 
 $('#conn-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const body = connPayload(new FormData(e.target));
-  try {
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const body = connPayload(new FormData(e.target));
     await api('/connections', { method: 'POST', body: JSON.stringify(body) });
     $('#conn-msg').textContent = 'Connection saved.';
+    $('#conn-msg').className = 'muted';
     clearConnTestTable();
     e.target.reset();
     updateConnAuthUI();
     await loadConnections();
-  } catch (err) {
-    $('#conn-msg').textContent = err.message;
-  }
+  }, { pending: 'Saving…', success: 'Saved', toast: 'Connection saved' });
 });
 
 function clearConnTestTable() {
@@ -426,24 +549,27 @@ function renderConnTestTable(steps) {
   wrap.classList.remove('hidden');
 }
 
-$('#test-conn-btn').addEventListener('click', async () => {
-  const body = connPayload(new FormData($('#conn-form')));
-  $('#conn-msg').textContent = 'Testing host, port, and database in sequence...';
-  clearConnTestTable();
-  try {
+$('#test-conn-btn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  await withBtn(btn, async () => {
+    const body = connPayload(new FormData($('#conn-form')));
+    $('#conn-msg').textContent = 'Testing host, port, and database in sequence...';
+    $('#conn-msg').className = 'muted';
+    clearConnTestTable();
     const res = await api('/connections/test/sequence', { method: 'POST', body: JSON.stringify(body) });
     renderConnTestTable(res.steps || []);
     if (res.status === 'error') {
       $('#conn-msg').textContent = 'Connection test failed at one step. Check the table below.';
-    } else if (res.empty === false) {
+      $('#conn-msg').className = 'error';
+      throw new Error('Connection test failed');
+    }
+    if (res.empty === false) {
       $('#conn-msg').textContent = `Connection successful — destination has ${res.table_count} table(s). Bulk migration will be blocked until empty.`;
     } else {
       $('#conn-msg').textContent = 'Connection successful.';
     }
-  } catch (err) {
-    $('#conn-msg').textContent = err.message;
-    clearConnTestTable();
-  }
+    $('#conn-msg').className = 'muted';
+  }, { pending: 'Testing…', success: 'Test done', toast: false });
 });
 
 function fmtDateRange(job) {
@@ -463,23 +589,22 @@ toggleDateRangeFields();
 
 $('#job-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  body.batch_size = parseInt(body.batch_size || '0', 10);
-  body.parallel_tables = parseInt(body.parallel_tables || '0', 10);
-  body.chunk_timeout_sec = parseInt(body.chunk_timeout_sec || '0', 10);
-  body.max_rows_per_table = parseInt(body.max_rows_per_table || '0', 10);
-  if (body.type !== 'date_range_backup') {
-    delete body.date_from;
-    delete body.date_to;
-    delete body.date_column;
-  }
-  body.start = true;
-  try {
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    body.batch_size = parseInt(body.batch_size || '0', 10);
+    body.parallel_tables = parseInt(body.parallel_tables || '0', 10);
+    body.chunk_timeout_sec = parseInt(body.chunk_timeout_sec || '0', 10);
+    body.max_rows_per_table = parseInt(body.max_rows_per_table || '0', 10);
+    if (body.type !== 'date_range_backup') {
+      delete body.date_from;
+      delete body.date_to;
+      delete body.date_column;
+    }
+    body.start = true;
     await api('/jobs', { method: 'POST', body: JSON.stringify(body) });
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Starting…', success: 'Started', toast: 'Job started — see Dashboard' });
 });
 
 async function activeJobPath(action) {
@@ -492,35 +617,29 @@ async function activeJobPath(action) {
   if (active) await api('/jobs/' + active.id + '/' + action, { method: 'POST' });
 }
 
-$('#pause-job-btn').addEventListener('click', async () => {
+$('#pause-job-btn').addEventListener('click', async (e) => {
   if (!confirm('Pause migration? Progress is saved and you can adjust settings before resuming.')) return;
-  try {
+  await withBtn(e.currentTarget, async () => {
     await activeJobPath('pause');
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Pausing…', success: 'Paused', toast: 'Migration paused' });
 });
 
-$('#cancel-job-btn').addEventListener('click', async () => {
+$('#cancel-job-btn').addEventListener('click', async (e) => {
   if (!confirm('Cancel this job permanently? You cannot resume a cancelled job.')) return;
-  try {
+  await withBtn(e.currentTarget, async () => {
     await activeJobPath('cancel');
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Cancelling…', success: 'Cancelled', toast: 'Job cancelled' });
 });
 
-async function resumeJob(jobId) {
-  try {
+async function resumeJob(jobId, btn) {
+  await withBtn(btn, async () => {
     await api('/jobs/' + jobId + '/start', { method: 'POST' });
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Resuming…', success: 'Resumed', toast: 'Job resumed' });
 }
 
-$('#resume-job-btn').addEventListener('click', async () => {
+$('#resume-job-btn').addEventListener('click', async (e) => {
   if (!activeJobId) return;
-  try {
+  await withBtn(e.currentTarget, async () => {
     const patch = {
       batch_size: parseInt($('#paused-batch-size').value, 10),
       parallel_tables: parseInt($('#paused-parallel').value, 10),
@@ -537,9 +656,7 @@ $('#resume-job-btn').addEventListener('click', async () => {
       body: JSON.stringify(patch),
     });
     await api('/jobs/' + activeJobId + '/start', { method: 'POST' });
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Resuming…', success: 'Resumed', toast: 'Job resumed' });
 });
 
 async function loadSettingsForm() {
@@ -566,65 +683,65 @@ async function loadSettingsForm() {
 
 $('#settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  body.default_batch_size = parseInt(body.default_batch_size, 10);
-  body.default_parallel = parseInt(body.default_parallel, 10);
-  body.default_chunk_timeout_sec = parseInt(body.default_chunk_timeout_sec, 10);
-  body.default_row_count_fallback_cap = parseInt(body.default_row_count_fallback_cap || '0', 10);
-  await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    body.default_batch_size = parseInt(body.default_batch_size, 10);
+    body.default_parallel = parseInt(body.default_parallel, 10);
+    body.default_chunk_timeout_sec = parseInt(body.default_chunk_timeout_sec, 10);
+    body.default_row_count_fallback_cap = parseInt(body.default_row_count_fallback_cap || '0', 10);
+    await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  }, { pending: 'Saving…', success: 'Saved', toast: 'Settings saved' });
 });
 
 $('#connectivity-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const s = await api('/settings');
-  const fd = new FormData(e.target);
-  const body = {
-    schedule_cron: s.schedule_cron,
-    schedule_source_id: s.schedule_source_id || '',
-    schedule_dest_id: s.schedule_dest_id || '',
-    default_batch_size: s.default_batch_size,
-    default_parallel: s.default_parallel,
-    default_chunk_timeout_sec: s.default_chunk_timeout_sec,
-    default_row_count_fallback_cap: s.default_row_count_fallback_cap || 0,
-    default_connect_timeout_sec: parseInt(fd.get('default_connect_timeout_sec'), 10) || 30,
-    mssql_encrypt: fd.get('mssql_encrypt') === 'on',
-    mssql_trust_server_cert: fd.get('mssql_trust_server_cert') === 'on',
-  };
-  await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const s = await api('/settings');
+    const fd = new FormData(e.target);
+    const body = {
+      schedule_cron: s.schedule_cron,
+      schedule_source_id: s.schedule_source_id || '',
+      schedule_dest_id: s.schedule_dest_id || '',
+      default_batch_size: s.default_batch_size,
+      default_parallel: s.default_parallel,
+      default_chunk_timeout_sec: s.default_chunk_timeout_sec,
+      default_row_count_fallback_cap: s.default_row_count_fallback_cap || 0,
+      default_connect_timeout_sec: parseInt(fd.get('default_connect_timeout_sec'), 10) || 30,
+      mssql_encrypt: fd.get('mssql_encrypt') === 'on',
+      mssql_trust_server_cert: fd.get('mssql_trust_server_cert') === 'on',
+    };
+    await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  }, { pending: 'Saving…', success: 'Saved', toast: 'Connectivity settings saved' });
 });
 
 $('#password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  $('#password-msg').textContent = '';
-  try {
+  const btn = e.submitter;
+  await withBtn(btn, async () => {
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    $('#password-msg').textContent = '';
     await api('/settings/password', { method: 'POST', body: JSON.stringify(body) });
     $('#password-msg').textContent = 'Password updated.';
     $('#password-msg').className = 'muted';
     e.target.reset();
-  } catch (err) {
-    $('#password-msg').textContent = err.message;
-    $('#password-msg').className = 'error';
-  }
+  }, { pending: 'Updating…', success: 'Updated', toast: 'Password updated' });
 });
 
-$('#engine-start-btn').addEventListener('click', async () => {
-  try {
+$('#engine-start-btn').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     await api('/engine/start', { method: 'POST', body: '{}' });
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Starting…', success: 'Engine on', toast: 'Migration engine started' });
 });
 
-$('#engine-stop-btn').addEventListener('click', async () => {
+$('#engine-stop-btn').addEventListener('click', async (e) => {
   if (!confirm('Stop the migration engine? Running jobs will be paused.')) return;
-  try {
+  await withBtn(e.currentTarget, async () => {
     await api('/engine/stop', { method: 'POST', body: '{}' });
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Stopping…', success: 'Engine off', toast: 'Migration engine stopped' });
 });
 
 function fillExploreSelects(list) {
@@ -683,22 +800,18 @@ $('#explore-conn-select').addEventListener('change', applyExploreSavedConn);
 $('#explore-type').addEventListener('change', updateExploreAuthUI);
 $('#explore-windows-auth').addEventListener('change', updateExploreAuthUI);
 
-$('#explore-list-btn').addEventListener('click', async () => {
-  $('#explore-msg').textContent = 'Connecting…';
-  exploreSelected = null;
-  $('#explore-detail-card').classList.add('hidden');
-  try {
+$('#explore-list-btn').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
+    exploreSelected = null;
+    $('#explore-detail-card').classList.add('hidden');
     const res = await api('/explore/tables', {
       method: 'POST',
       body: JSON.stringify(explorePayload()),
     });
     renderExploreTables(res.tables || []);
     $('#explore-msg').textContent = `${(res.tables || []).length} table(s) found.`;
-  } catch (err) {
-    $('#explore-msg').textContent = err.message;
-    $('#explore-table-list').className = 'explore-table-list empty-state';
-    $('#explore-table-list').textContent = 'Could not list tables.';
-  }
+    $('#explore-msg').className = 'muted';
+  }, { pending: 'Listing…', success: 'Listed', toast: false });
 });
 
 function renderExploreTables(tables) {
@@ -739,15 +852,13 @@ async function exploreTableRequest(path, extraQuery = '') {
   });
 }
 
-$('#explore-sample-btn').addEventListener('click', async () => {
-  try {
+$('#explore-sample-btn').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     const body = await exploreTableRequest();
     const sample = await api('/explore/sample', { method: 'POST', body: JSON.stringify(body) });
     renderSampleTable(sample);
     $('#explore-sample-wrap').classList.remove('hidden');
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Loading…', success: 'Loaded', toast: 'Sample rows loaded' });
 });
 
 function renderSampleTable(sample) {
@@ -780,42 +891,34 @@ async function downloadExplore(path, query, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-$('#explore-sample-dl').addEventListener('click', async () => {
-  try {
+$('#explore-sample-dl').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.sample.csv` : 'sample.csv';
     await downloadExplore('/explore/sample', '?download=csv', name);
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Downloading…', success: 'Downloaded', toast: 'CSV download started' });
 });
 
-$('#explore-schema-btn').addEventListener('click', async () => {
-  try {
+$('#explore-schema-btn').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     const body = await exploreTableRequest();
     const res = await api('/explore/schema', { method: 'POST', body: JSON.stringify(body) });
     $('#explore-schema-pre').textContent = JSON.stringify(res.columns || [], null, 2);
     $('#explore-schema-wrap').classList.remove('hidden');
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Loading…', success: 'Loaded', toast: 'Schema loaded' });
 });
 
-$('#explore-schema-json-dl').addEventListener('click', async () => {
-  try {
+$('#explore-schema-json-dl').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.schema.json` : 'schema.json';
     await downloadExplore('/explore/schema', '?download=json', name);
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Downloading…', success: 'Downloaded', toast: 'JSON download started' });
 });
 
-$('#explore-schema-ddl-dl').addEventListener('click', async () => {
-  try {
+$('#explore-schema-ddl-dl').addEventListener('click', async (e) => {
+  await withBtn(e.currentTarget, async () => {
     const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.schema.sql` : 'schema.sql';
     await downloadExplore('/explore/schema', '?download=ddl', name);
-  } catch (err) {
-    alert(err.message);
-  }
+  }, { pending: 'Downloading…', success: 'Downloaded', toast: 'DDL download started' });
 });
 
 applyExploreSavedConn();

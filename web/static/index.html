@@ -66,6 +66,19 @@
           </div>
         </div>
 
+        <div id="schedule-card" class="card hidden">
+          <h3>Scheduled incremental sync</h3>
+          <div class="schedule-status">
+            <span id="schedule-badge" class="badge cancelled">Not armed</span>
+            <span id="schedule-label" class="muted"></span>
+          </div>
+          <div class="stat-row schedule-stats">
+            <span>Next run: <strong id="schedule-next">—</strong></span>
+            <span>Last run: <strong id="schedule-last">—</strong></span>
+          </div>
+          <p id="schedule-detail" class="muted note"></p>
+        </div>
+
         <div id="active-job-card" class="card hidden">
           <h3>Active job</h3>
           <div class="progress-block">
@@ -274,6 +287,7 @@
             </label>
             <label>Incremental schedule
               <select name="schedule_cron">
+                <option value="@every5min">Every 5 minutes (testing)</option>
                 <option value="0 */4 * * *">Every 4 hours</option>
                 <option value="0 */6 * * *">Every 6 hours</option>
                 <option value="0 */12 * * *">Every 12 hours</option>
@@ -310,6 +324,7 @@
       </section>
     </main>
   </div>
+  <div id="action-toast" class="action-toast hidden" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -126,4 +126,16 @@ type DashboardState struct {
 	Connections []Connection `json:"connections"`
 	Working       bool         `json:"working"`
 	EngineEnabled bool         `json:"engine_enabled"`
+	Schedule      *ScheduleInfo `json:"schedule,omitempty"`
+}
+
+// ScheduleInfo describes the configured incremental sync schedule for the dashboard.
+type ScheduleInfo struct {
+	Cron      string    `json:"cron"`
+	Label     string    `json:"label"`
+	SourceID  string    `json:"source_id"`
+	DestID    string    `json:"dest_id"`
+	Armed     bool      `json:"armed"`
+	NextRunAt time.Time `json:"next_run_at"`
+	LastJob   *Job      `json:"last_job,omitempty"`
 }
