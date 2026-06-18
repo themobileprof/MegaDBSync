@@ -90,8 +90,9 @@ This stops the **HTTP process** (`megadbsync.exe`), not just the migration engin
 
 ```powershell
 # Quick stop when something is listening on 8080
-$pid = (Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)
-if ($pid) { Stop-Process -Id $pid -Force; Write-Host "Stopped process $pid" }
+# (Do not use $pid — PowerShell reserves $PID as the current shell's process ID.)
+$procId = (Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)
+if ($procId) { Stop-Process -Id $procId -Force; Write-Host "Stopped process $procId" }
 ```
 
 To **pause jobs but keep the UI running**, use **Dashboard → Stop engine** instead (running migrations are paused; the web server stays up).
