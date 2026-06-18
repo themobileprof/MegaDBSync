@@ -13,7 +13,8 @@ import (
 )
 
 type TableMeta struct {
-	Schema           string
+	Schema           string // Oracle owner (source)
+	DestSchema       string // SQL Server schema (destination)
 	Name             string
 	Columns          []ColumnMeta
 	PrimaryKeys      []string
@@ -289,13 +290,17 @@ func detectSyncMode(cols []ColumnMeta, pks []string) (watermarkCol, mode string)
 }
 
 func CreateMSSQLTable(ctx context.Context, db *sql.DB, meta TableMeta) error {
+	schema := strings.TrimSpace(meta.DestSchema)
+	if schema == "" {
+		schema = "dbo"
+	}
 	var b strings.Builder
 	b.WriteString("IF NOT EXISTS (SELECT 1 FROM sys.tables t JOIN sys.schemas s ON t.schema_id=s.schema_id WHERE s.name=")
-	b.WriteString(quoteLiteral(meta.Schema))
+	b.WriteString(quoteLiteral(schema))
 	b.WriteString(" AND t.name=")
 	b.WriteString(quoteLiteral(meta.Name))
 	b.WriteString(") CREATE TABLE ")
-	b.WriteString(quoteIdent(meta.Schema))
+	b.WriteString(quoteIdent(schema))
 	b.WriteString(".")
 	b.WriteString(quoteIdent(meta.Name))
 	b.WriteString(" (")

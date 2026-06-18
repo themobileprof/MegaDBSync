@@ -93,14 +93,12 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 		if err != nil {
 			return err
 		}
-		if dst.Schema != "" && !strings.EqualFold(meta.Schema, dst.Schema) {
-			meta.Schema = dst.Schema
-		}
+		applyDestSchema(&meta, dst)
 		rowsTotal += contributeRowTotal(meta)
-		job.CurrentTable = meta.Schema + "." + meta.Name
+		job.CurrentTable = destTableLabel(meta)
 		_ = e.Store.UpdateJob(job)
-		if err := dbconn.CreateMSSQLTable(ctx, mssqlDB, meta); err != nil {
-			return fmt.Errorf("create table %s: %w", meta.Name, err)
+		if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+			return fmt.Errorf("prepare table %s: %w", meta.Name, err)
 		}
 		metas = append(metas, meta)
 	}
@@ -116,7 +114,7 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 
 	pending := make([]dbconn.TableMeta, 0, len(metas))
 	for _, meta := range metas {
-		key := tableTaskKey(meta.Schema, meta.Name)
+		key := tableTaskKey(meta.DestSchema, meta.Name)
 		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
 			continue
 		}
@@ -139,11 +137,11 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 		case sem <- struct{}{}:
 		}
 		tableMeta := meta
-		existing := taskByKey[tableTaskKey(tableMeta.Schema, tableMeta.Name)]
+		existing := taskByKey[tableTaskKey(tableMeta.DestSchema, tableMeta.Name)]
 		go func() {
 			defer func() { <-sem; done <- struct{}{} }()
 			task := store.TableTask{
-				JobID: job.ID, SchemaName: tableMeta.Schema, TableName: tableMeta.Name,
+				JobID: job.ID, SchemaName: tableMeta.DestSchema, TableName: tableMeta.Name,
 				Status: store.JobRunning, SyncMode: tableMeta.SyncMode, WatermarkCol: tableMeta.WatermarkCol,
 				LastRowID: existing.LastRowID, RowsDone: existing.RowsDone,
 			}
@@ -172,7 +170,7 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 				task.ErrorMessage = err.Error()
 				task.RowsDone = tableRows
 				_ = e.Store.UpsertTableTask(task)
-				errCh <- fmt.Errorf("%s.%s: %w", tableMeta.Schema, tableMeta.Name, err)
+				errCh <- fmt.Errorf("%s: %w", destTableLabel(tableMeta), err)
 				return
 			}
 			rowsDoneAtomic.Add(tableRows - existing.RowsDone)
@@ -283,16 +281,14 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		if err != nil {
 			return err
 		}
-		if dst.Schema != "" {
-			meta.Schema = dst.Schema
-		}
+		applyDestSchema(&meta, dst)
 		rowsTotal += contributeRowTotal(meta)
 		mode, wmCol, wm, maxKey, scn, _ := e.Store.GetSyncState(job.SourceID, job.DestID, meta.Schema, meta.Name)
 		if mode != "" {
 			meta.SyncMode = mode
 			meta.WatermarkCol = wmCol
 		}
-		key := tableTaskKey(meta.Schema, meta.Name)
+		key := tableTaskKey(meta.DestSchema, meta.Name)
 		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
 			continue
 		}
@@ -330,12 +326,12 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		case sem <- struct{}{}:
 		}
 		w := work
-		existing := taskByKey[tableTaskKey(w.meta.Schema, w.meta.Name)]
+		existing := taskByKey[tableTaskKey(w.meta.DestSchema, w.meta.Name)]
 		go func() {
 			defer func() { <-sem }()
 			meta := w.meta
 			task := store.TableTask{
-				JobID: job.ID, SchemaName: meta.Schema, TableName: meta.Name,
+				JobID: job.ID, SchemaName: meta.DestSchema, TableName: meta.Name,
 				Status: store.JobRunning, SyncMode: meta.SyncMode, WatermarkCol: meta.WatermarkCol,
 				LastWatermark: w.state.watermark, LastMaxKey: w.state.maxKey, LastSCN: w.state.scn,
 				RowsDone: existing.RowsDone,
@@ -367,7 +363,7 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 				task.Status = store.JobFailed
 				task.ErrorMessage = err.Error()
 				_ = e.Store.UpsertTableTask(task)
-				_ = e.Store.LogEvent(job.ID, "error", fmt.Sprintf("%s.%s: %v", meta.Schema, meta.Name, err))
+				_ = e.Store.LogEvent(job.ID, "error", fmt.Sprintf("%s: %v", destTableLabel(meta), err))
 				errCh <- err
 				return
 			}
@@ -420,6 +416,10 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 }
 
 func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, chunkTimeout time.Duration, task *store.TableTask) (int64, syncState, error) {
+	normalizeDestSchema(&meta)
+	if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+		return 0, state, err
+	}
 	var total int64
 	cur := state
 	var lastUI time.Time
@@ -439,7 +439,7 @@ func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID stri
 			cancel()
 			break
 		}
-		n, err := dbconn.MergeUpsertMSSQL(chunkCtx, mssqlDB, meta.Schema, meta.Name, cols, meta.PrimaryKeys, rows)
+		n, err := dbconn.MergeUpsertMSSQL(chunkCtx, mssqlDB, meta.DestSchema, meta.Name, cols, meta.PrimaryKeys, rows)
 		cancel()
 		if err != nil {
 			return total, cur, wrapChunkErr(err, chunkTimeout)
@@ -470,6 +470,10 @@ func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID stri
 }
 
 func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, startRowID string, chunkTimeout time.Duration, task *store.TableTask, opts tableCopyOpts) (int64, error) {
+	normalizeDestSchema(&meta)
+	if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+		return 0, err
+	}
 	colNames := make([]string, len(meta.Columns))
 	for i, c := range meta.Columns {
 		colNames[i] = c.Name
@@ -586,9 +590,9 @@ func (e *Engine) captureSyncHighWater(ctx context.Context, ora *sql.DB, meta dbc
 
 func (e *Engine) writeChunk(ctx context.Context, mssqlDB *sql.DB, meta dbconn.TableMeta, colNames []string, rows [][]any, opts tableCopyOpts) (int64, error) {
 	if opts.upsert {
-		return dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, colNames, meta.PrimaryKeys, rows)
+		return dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.DestSchema, meta.Name, colNames, meta.PrimaryKeys, rows)
 	}
-	return dbconn.BulkInsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, colNames, rows)
+	return dbconn.BulkInsertMSSQL(ctx, mssqlDB, meta.DestSchema, meta.Name, colNames, rows)
 }
 
 func (e *Engine) fetchFullChunk(ctx context.Context, ora *sql.DB, meta dbconn.TableMeta, cols []string, batch int, lastRowID, dateCol string, bounds DateBounds) ([][]any, string, error) {

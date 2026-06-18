@@ -98,9 +98,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 		if err != nil {
 			return err
 		}
-		if dst.Schema != "" && !strings.EqualFold(meta.Schema, dst.Schema) {
-			meta.Schema = dst.Schema
-		}
+		applyDestSchema(&meta, dst)
 		dateCol, err := dbconn.ResolveDateColumn(meta, job.DateColumn)
 		if err != nil {
 			return err
@@ -109,7 +107,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 		if bounds.Active && dateCol == "" {
 			_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Skipping %s.%s: no date column for range filter", meta.Schema, meta.Name))
 			task := store.TableTask{
-				JobID: job.ID, SchemaName: meta.Schema, TableName: meta.Name,
+				JobID: job.ID, SchemaName: meta.DestSchema, TableName: meta.Name,
 				Status: store.JobCompleted, SyncMode: "date_backup",
 				ErrorMessage: "skipped: no date column for range filter",
 			}
@@ -121,10 +119,10 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 			continue
 		}
 		rowsTotal += contributeRowTotal(meta)
-		job.CurrentTable = meta.Schema + "." + meta.Name
+		job.CurrentTable = destTableLabel(meta)
 		_ = e.Store.UpdateJob(job)
-		if err := dbconn.CreateMSSQLTable(ctx, mssqlDB, meta); err != nil {
-			return fmt.Errorf("create table %s: %w", meta.Name, err)
+		if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
+			return fmt.Errorf("prepare table %s: %w", meta.Name, err)
 		}
 		metas = append(metas, meta)
 	}
@@ -140,7 +138,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 
 	pending := make([]dbconn.TableMeta, 0, len(metas))
 	for _, meta := range metas {
-		key := tableTaskKey(meta.Schema, meta.Name)
+		key := tableTaskKey(meta.DestSchema, meta.Name)
 		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
 			continue
 		}
@@ -164,13 +162,13 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 		case sem <- struct{}{}:
 		}
 		tableMeta := meta
-		existing := taskByKey[tableTaskKey(tableMeta.Schema, tableMeta.Name)]
+		existing := taskByKey[tableTaskKey(tableMeta.DestSchema, tableMeta.Name)]
 		opts := copyOpts
 		opts.dateCol = tableMeta.DateCol
 		go func() {
 			defer func() { <-sem; done <- struct{}{} }()
 			task := store.TableTask{
-				JobID: job.ID, SchemaName: tableMeta.Schema, TableName: tableMeta.Name,
+				JobID: job.ID, SchemaName: tableMeta.DestSchema, TableName: tableMeta.Name,
 				Status: store.JobRunning, SyncMode: "date_backup", WatermarkCol: tableMeta.DateCol,
 				LastRowID: existing.LastRowID, RowsDone: existing.RowsDone,
 			}
@@ -199,7 +197,7 @@ func (e *Engine) RunDateRangeBackup(ctx context.Context, job store.Job, src, dst
 				task.ErrorMessage = err.Error()
 				task.RowsDone = tableRows
 				_ = e.Store.UpsertTableTask(task)
-				errCh <- fmt.Errorf("%s.%s: %w", tableMeta.Schema, tableMeta.Name, err)
+				errCh <- fmt.Errorf("%s: %w", destTableLabel(tableMeta), err)
 				return
 			}
 			rowsDoneAtomic.Add(tableRows - existing.RowsDone)

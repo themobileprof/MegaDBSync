@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/themobileprof/megadbsync/internal/dbconn"
@@ -91,6 +92,23 @@ func contributeRowTotal(meta dbconn.TableMeta) int64 {
 
 func isTableWorkComplete(status store.JobStatus) bool {
 	return status == store.JobCompleted
+}
+
+func normalizeDestSchema(meta *dbconn.TableMeta) {
+	if strings.TrimSpace(meta.DestSchema) == "" {
+		meta.DestSchema = "dbo"
+	}
+}
+
+func applyDestSchema(meta *dbconn.TableMeta, dst store.Connection) {
+	if dst.Schema != "" {
+		meta.DestSchema = dst.Schema
+	}
+	normalizeDestSchema(meta)
+}
+
+func destTableLabel(meta dbconn.TableMeta) string {
+	return meta.DestSchema + "." + meta.Name
 }
 
 

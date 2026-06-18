@@ -63,3 +63,34 @@ func verifyMSSQLSchema(ctx context.Context, db *sql.DB, schema string) (int, err
 	}
 	return len(tables), nil
 }
+
+// PrepareDestinationTable ensures the SQL Server schema exists and creates the destination
+// table from Oracle column metadata (DDL) when it does not already exist.
+func PrepareDestinationTable(ctx context.Context, db *sql.DB, meta TableMeta) error {
+	dest := strings.TrimSpace(meta.DestSchema)
+	if dest == "" {
+		dest = "dbo"
+	}
+	if err := ensureMSSQLSchema(ctx, db, dest); err != nil {
+		return fmt.Errorf("schema %s: %w", dest, err)
+	}
+	if err := CreateMSSQLTable(ctx, db, meta); err != nil {
+		return fmt.Errorf("table %s.%s: %w", dest, meta.Name, err)
+	}
+	return nil
+}
+
+func ensureMSSQLSchema(ctx context.Context, db *sql.DB, schema string) error {
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ")
+	b.WriteString(quoteLiteral(schema))
+	b.WriteString(") EXEC(N'CREATE SCHEMA ")
+	b.WriteString(strings.ReplaceAll(quoteIdent(schema), "'", "''"))
+	b.WriteString("')")
+	_, err := db.ExecContext(ctx, b.String())
+	return err
+}
