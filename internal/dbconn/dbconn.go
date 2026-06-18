@@ -31,6 +31,8 @@ type ColumnMeta struct {
 	Name         string
 	DataType     string
 	CharMaxLen   *int64
+	DataLength   *int64
+	CharUsed     string
 	NumericPrec  *int64
 	NumericScale *int64
 	Nullable     bool
@@ -258,7 +260,7 @@ func LoadOracleTableMeta(ctx context.Context, db *sql.DB, schema, table string, 
 
 func oracleColumns(ctx context.Context, db *sql.DB, schema, table string) ([]ColumnMeta, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT column_name, data_type, char_length, data_precision, data_scale, nullable
+SELECT column_name, data_type, char_length, data_length, char_used, data_precision, data_scale, nullable
 FROM all_tab_columns
 WHERE owner = :1 AND table_name = :2
 ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
@@ -269,13 +271,19 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 	var cols []ColumnMeta
 	for rows.Next() {
 		var c ColumnMeta
-		var nullable string
-		var charLen, prec, scale sql.NullInt64
-		if err := rows.Scan(&c.Name, &c.DataType, &charLen, &prec, &scale, &nullable); err != nil {
+		var nullable, charUsed sql.NullString
+		var charLen, dataLen, prec, scale sql.NullInt64
+		if err := rows.Scan(&c.Name, &c.DataType, &charLen, &dataLen, &charUsed, &prec, &scale, &nullable); err != nil {
 			return nil, err
 		}
 		if charLen.Valid {
 			c.CharMaxLen = &charLen.Int64
+		}
+		if dataLen.Valid {
+			c.DataLength = &dataLen.Int64
+		}
+		if charUsed.Valid {
+			c.CharUsed = charUsed.String
 		}
 		if prec.Valid {
 			c.NumericPrec = &prec.Int64
@@ -283,7 +291,7 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 		if scale.Valid {
 			c.NumericScale = &scale.Int64
 		}
-		c.Nullable = nullable == "Y"
+		c.Nullable = nullable.Valid && strings.EqualFold(nullable.String, "Y")
 		cols = append(cols, c)
 	}
 	return cols, rows.Err()
@@ -359,7 +367,7 @@ func CreateMSSQLTable(ctx context.Context, db *sql.DB, meta TableMeta) error {
 		}
 		b.WriteString(quoteIdent(col.Name))
 		b.WriteString(" ")
-		b.WriteString(mapOracleType(col))
+		b.WriteString(MapOracleType(col))
 		if !col.Nullable {
 			b.WriteString(" NOT NULL")
 		}
@@ -379,35 +387,6 @@ func CreateMSSQLTable(ctx context.Context, db *sql.DB, meta TableMeta) error {
 	b.WriteString(")")
 	_, err := db.ExecContext(ctx, b.String())
 	return err
-}
-
-func mapOracleType(c ColumnMeta) string {
-	dt := strings.ToUpper(c.DataType)
-	switch {
-	case strings.Contains(dt, "CHAR"), strings.Contains(dt, "CLOB"):
-		if c.CharMaxLen != nil && *c.CharMaxLen > 0 && *c.CharMaxLen <= 4000 {
-			return fmt.Sprintf("NVARCHAR(%d)", *c.CharMaxLen)
-		}
-		return "NVARCHAR(MAX)"
-	case strings.Contains(dt, "BLOB"), strings.Contains(dt, "RAW"), strings.Contains(dt, "LONG RAW"):
-		return "VARBINARY(MAX)"
-	case strings.Contains(dt, "DATE"), strings.Contains(dt, "TIMESTAMP"):
-		return "DATETIME2(6)"
-	case strings.Contains(dt, "FLOAT"), strings.Contains(dt, "BINARY_DOUBLE"):
-		return "FLOAT(53)"
-	case strings.Contains(dt, "BINARY_FLOAT"):
-		return "REAL"
-	case strings.Contains(dt, "NUMBER"):
-		if c.NumericScale != nil && *c.NumericScale == 0 && c.NumericPrec != nil && *c.NumericPrec <= 18 {
-			return "BIGINT"
-		}
-		if c.NumericPrec != nil && c.NumericScale != nil {
-			return fmt.Sprintf("DECIMAL(%d,%d)", *c.NumericPrec, *c.NumericScale)
-		}
-		return "DECIMAL(38,10)"
-	default:
-		return "NVARCHAR(MAX)"
-	}
 }
 
 func quoteIdent(s string) string {

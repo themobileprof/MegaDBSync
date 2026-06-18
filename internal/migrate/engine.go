@@ -640,6 +640,7 @@ func (e *Engine) captureSyncHighWater(ctx context.Context, ora *sql.DB, meta dbc
 }
 
 func (e *Engine) writeChunk(ctx context.Context, mssqlDB *sql.DB, meta dbconn.TableMeta, colNames []string, rows [][]any, opts tableCopyOpts) (int64, error) {
+	rows = dbconn.NormalizeRowsForMSSQL(meta.Columns, rows)
 	if opts.upsert {
 		return dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.DestSchema, meta.Name, colNames, meta.PrimaryKeys, rows)
 	}
