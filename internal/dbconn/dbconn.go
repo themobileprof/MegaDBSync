@@ -36,6 +36,14 @@ type ColumnMeta struct {
 }
 
 func OpenOracle(ctx context.Context, c store.Connection, password string) (*sql.DB, error) {
+	return openOracle(ctx, c, password, defaultConnectOpts)
+}
+
+func openOracle(ctx context.Context, c store.Connection, password string, opts ConnectOpts) (*sql.DB, error) {
+	opts = opts.normalized()
+	pingCtx, cancel := withConnectTimeout(ctx, opts)
+	defer cancel()
+
 	service := c.Database
 	if service == "" {
 		service = "ORCL"
@@ -44,20 +52,28 @@ func OpenOracle(ctx context.Context, c store.Connection, password string) (*sql.
 	if port == 0 {
 		port = 1521
 	}
-	connStr := go_ora.BuildUrl(c.Host, port, service, c.Username, password, nil)
+	connStr := go_ora.BuildUrl(c.Host, port, service, c.Username, password, oracleTimeoutOptions(opts))
 	db, err := sql.Open("oracle", connStr)
 	if err != nil {
 		return nil, err
 	}
 	ConfigurePool(db, 2)
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("oracle ping: %w", err)
 	}
 	return db, nil
 }
 
 func OpenMSSQL(ctx context.Context, c store.Connection, password string) (*sql.DB, error) {
+	return openMSSQL(ctx, c, password, defaultConnectOpts)
+}
+
+func openMSSQL(ctx context.Context, c store.Connection, password string, opts ConnectOpts) (*sql.DB, error) {
+	opts = opts.normalized()
+	pingCtx, cancel := withConnectTimeout(ctx, opts)
+	defer cancel()
+
 	port := c.Port
 	if port == 0 {
 		port = 1433
@@ -81,17 +97,18 @@ func OpenMSSQL(ctx context.Context, c store.Connection, password string) (*sql.D
 	if c.WindowsAuth {
 		q.Add("integrated security", "true")
 	}
-	q.Add("encrypt", "true")
-	q.Add("TrustServerCertificate", "true")
+	q.Add("encrypt", mssqlEncryptQuery(opts))
+	q.Add("TrustServerCertificate", mssqlTrustCertQuery(opts))
+	q.Add("connection timeout", fmt.Sprintf("%d", opts.TimeoutSec))
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("sqlserver", u.String())
 	if err != nil {
 		return nil, err
 	}
 	ConfigurePool(db, 2)
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("sql server ping: %w", err)
 	}
 	return db, nil
 }

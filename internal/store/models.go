@@ -104,7 +104,10 @@ type AppSettings struct {
 	DefaultParallel        int `json:"default_parallel"`
 	DefaultChunkTimeoutSec   int `json:"default_chunk_timeout_sec"`
 	DefaultRowCountFallbackCap int64 `json:"default_row_count_fallback_cap"`
-	EngineEnabled            bool `json:"engine_enabled"`
+	DefaultConnectTimeoutSec   int   `json:"default_connect_timeout_sec"`
+	MssqlEncrypt               bool  `json:"mssql_encrypt"`
+	MssqlTrustServerCert       bool  `json:"mssql_trust_server_cert"`
+	EngineEnabled              bool  `json:"engine_enabled"`
 }
 
 type ActivityEvent struct {

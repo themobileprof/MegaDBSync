@@ -16,4 +16,5 @@ func ConfigurePool(db *sql.DB, parallel int) {
 	db.SetMaxOpenConns(n)
 	db.SetMaxIdleConns(parallel)
 	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 }

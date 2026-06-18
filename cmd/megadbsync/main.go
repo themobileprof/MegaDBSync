@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/themobileprof/megadbsync/internal/api"
 	"github.com/themobileprof/megadbsync/internal/auth"
+	"github.com/themobileprof/megadbsync/internal/dbconn"
 	"github.com/themobileprof/megadbsync/internal/jobs"
 	"github.com/themobileprof/megadbsync/internal/platform"
 	"github.com/themobileprof/megadbsync/internal/store"
@@ -34,6 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("settings: %v", err)
 	}
+	applyConnectOpts(settings)
 
 	authMgr := auth.NewManager()
 	authMgr.SetPasswordHash(settings.AdminPasswordHash)
@@ -43,7 +46,7 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
-	srv := &api.Server{
+	apiServer := &api.Server{
 		Store:     st,
 		Auth:      authMgr,
 		Runner:    runner,
@@ -51,15 +54,29 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", srv.Handler())
+	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/", web.Handler())
 
 	log.Printf("MegaDBSync listening on http://%s", *addr)
 	log.Printf("State directory: %s", *dataDir)
 	log.Printf("Open the URL above in your browser. The migration engine is stopped until you start it from the dashboard.")
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      0, // SSE dashboard keeps connections open
+		IdleTimeout:       2 * time.Minute,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func applyConnectOpts(st store.AppSettings) {
+	dbconn.SetDefaultConnectOpts(dbconn.ConnectOptsFromSettings(
+		st.DefaultConnectTimeoutSec, st.MssqlEncrypt, st.MssqlTrustServerCert,
+	))
 }
 
 func init() {

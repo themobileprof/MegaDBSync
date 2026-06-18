@@ -537,15 +537,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]any{
-			"schedule_cron":              st.ScheduleCron,
-			"schedule_source_id":         st.ScheduleSourceID,
-			"schedule_dest_id":           st.ScheduleDestID,
-			"default_batch_size":         st.DefaultBatchSize,
-			"default_parallel":           st.DefaultParallel,
-			"default_chunk_timeout_sec":  st.DefaultChunkTimeoutSec,
+			"schedule_cron":                  st.ScheduleCron,
+			"schedule_source_id":             st.ScheduleSourceID,
+			"schedule_dest_id":             st.ScheduleDestID,
+			"default_batch_size":             st.DefaultBatchSize,
+			"default_parallel":               st.DefaultParallel,
+			"default_chunk_timeout_sec":      st.DefaultChunkTimeoutSec,
 			"default_row_count_fallback_cap": st.DefaultRowCountFallbackCap,
-			"engine_enabled":             st.EngineEnabled,
-			"has_password":               st.AdminPasswordHash != "",
+			"default_connect_timeout_sec":    st.DefaultConnectTimeoutSec,
+			"mssql_encrypt":                  st.MssqlEncrypt,
+			"mssql_trust_server_cert":        st.MssqlTrustServerCert,
+			"engine_enabled":                 st.EngineEnabled,
+			"has_password":                   st.AdminPasswordHash != "",
 		})
 	case http.MethodPut:
 		var body store.AppSettings
@@ -562,6 +565,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if body.DefaultChunkTimeoutSec <= 0 {
 			body.DefaultChunkTimeoutSec = 300
 		}
+		if body.DefaultConnectTimeoutSec <= 0 {
+			body.DefaultConnectTimeoutSec = 30
+		}
 		if body.ScheduleCron == "" {
 			body.ScheduleCron = "0 */4 * * *"
 		}
@@ -569,10 +575,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.applyConnectOpts()
 		writeJSON(w, map[string]string{"status": "ok"})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) applyConnectOpts() {
+	st, err := s.Store.GetSettings()
+	if err != nil {
+		return
+	}
+	dbconn.SetDefaultConnectOpts(dbconn.ConnectOptsFromSettings(
+		st.DefaultConnectTimeoutSec, st.MssqlEncrypt, st.MssqlTrustServerCert,
+	))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

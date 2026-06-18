@@ -402,7 +402,24 @@ Test:
 Test-NetConnection -ComputerName sql-host.contoso.local -Port 1433
 ```
 
-MegaDBSync uses `encrypt=true` and `TrustServerCertificate=true` for SQL Server connections (typical on-prem setups).
+MegaDBSync uses `encrypt=true` and `TrustServerCertificate=true` for SQL Server connections by default (typical on-prem setups). Adjust under **Settings → Database connectivity** if your SQL Server requires different TLS settings.
+
+| Setting | Default | When to change |
+|---------|---------|----------------|
+| Connect timeout | 30 sec | Slow networks or distant DB hosts |
+| SQL Server encrypt | on | Turn off only for legacy lab SQL instances without TLS |
+| Trust server certificate | on | Turn off when using a proper CA-signed cert and strict validation |
+
+### Common Windows gotchas
+
+| Issue | Mitigation |
+|-------|------------|
+| Downloaded exe blocked | `Unblock-File C:\MegaDBSync\megadbsync.exe` |
+| DPAPI passwords unreadable after service account change | Re-enter connection passwords in the UI under the same account that runs the service |
+| Oracle **Database** field | Use **service name** (e.g. `XEPDB1`), not SID |
+| SQL integrated auth fails | Service account must be a Windows login in SQL Server |
+| Connection hangs then fails | Increase connect timeout in Settings; verify firewall with `Test-NetConnection` |
+| Dashboard frozen behind IIS | ARR response buffer threshold = 0 (see section 5.5) |
 
 ---
 

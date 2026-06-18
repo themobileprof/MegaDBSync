@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS settings (
   default_parallel INTEGER NOT NULL DEFAULT 2,
   default_chunk_timeout_sec INTEGER NOT NULL DEFAULT 300,
   default_row_count_fallback_cap INTEGER NOT NULL DEFAULT 0,
+  default_connect_timeout_sec INTEGER NOT NULL DEFAULT 30,
+  mssql_encrypt INTEGER NOT NULL DEFAULT 1,
+  mssql_trust_server_cert INTEGER NOT NULL DEFAULT 1,
   engine_enabled INTEGER NOT NULL DEFAULT 0
 );
 
@@ -177,21 +180,26 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN date_from TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN date_to TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN max_rows_per_table INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN default_connect_timeout_sec INTEGER NOT NULL DEFAULT 30`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mssql_encrypt INTEGER NOT NULL DEFAULT 1`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mssql_trust_server_cert INTEGER NOT NULL DEFAULT 1`)
 	return nil
 }
 
 func (s *Store) GetSettings() (AppSettings, error) {
 	var st AppSettings
-	var engine int
-	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, default_chunk_timeout_sec, default_row_count_fallback_cap, engine_enabled FROM settings WHERE id = 1`).
-		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &st.DefaultChunkTimeoutSec, &st.DefaultRowCountFallbackCap, &engine)
+	var engine, mssqlEnc, mssqlTrust int
+	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, default_chunk_timeout_sec, default_row_count_fallback_cap, default_connect_timeout_sec, mssql_encrypt, mssql_trust_server_cert, engine_enabled FROM settings WHERE id = 1`).
+		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &st.DefaultChunkTimeoutSec, &st.DefaultRowCountFallbackCap, &st.DefaultConnectTimeoutSec, &mssqlEnc, &mssqlTrust, &engine)
+	st.MssqlEncrypt = mssqlEnc == 1
+	st.MssqlTrustServerCert = mssqlTrust == 1
 	st.EngineEnabled = engine == 1
 	return st, err
 }
 
 func (s *Store) UpdateSettings(st AppSettings) error {
-	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=?, default_chunk_timeout_sec=?, default_row_count_fallback_cap=? WHERE id=1`,
-		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel, st.DefaultChunkTimeoutSec, st.DefaultRowCountFallbackCap)
+	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=?, default_chunk_timeout_sec=?, default_row_count_fallback_cap=?, default_connect_timeout_sec=?, mssql_encrypt=?, mssql_trust_server_cert=? WHERE id=1`,
+		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel, st.DefaultChunkTimeoutSec, st.DefaultRowCountFallbackCap, st.DefaultConnectTimeoutSec, boolInt(st.MssqlEncrypt), boolInt(st.MssqlTrustServerCert))
 	return err
 }
 

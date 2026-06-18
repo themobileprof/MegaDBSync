@@ -480,6 +480,12 @@ async function loadSettingsForm() {
   }
   if (s.schedule_source_id) form.schedule_source_id.value = s.schedule_source_id;
   if (s.schedule_dest_id) form.schedule_dest_id.value = s.schedule_dest_id;
+  const connForm = $('#connectivity-form');
+  if (connForm) {
+    connForm.default_connect_timeout_sec.value = s.default_connect_timeout_sec || 30;
+    connForm.mssql_encrypt.checked = s.mssql_encrypt !== false;
+    connForm.mssql_trust_server_cert.checked = s.mssql_trust_server_cert !== false;
+  }
 }
 
 $('#settings-form').addEventListener('submit', async (e) => {
@@ -490,6 +496,25 @@ $('#settings-form').addEventListener('submit', async (e) => {
   body.default_parallel = parseInt(body.default_parallel, 10);
   body.default_chunk_timeout_sec = parseInt(body.default_chunk_timeout_sec, 10);
   body.default_row_count_fallback_cap = parseInt(body.default_row_count_fallback_cap || '0', 10);
+  await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+});
+
+$('#connectivity-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const s = await api('/settings');
+  const fd = new FormData(e.target);
+  const body = {
+    schedule_cron: s.schedule_cron,
+    schedule_source_id: s.schedule_source_id || '',
+    schedule_dest_id: s.schedule_dest_id || '',
+    default_batch_size: s.default_batch_size,
+    default_parallel: s.default_parallel,
+    default_chunk_timeout_sec: s.default_chunk_timeout_sec,
+    default_row_count_fallback_cap: s.default_row_count_fallback_cap || 0,
+    default_connect_timeout_sec: parseInt(fd.get('default_connect_timeout_sec'), 10) || 30,
+    mssql_encrypt: fd.get('mssql_encrypt') === 'on',
+    mssql_trust_server_cert: fd.get('mssql_trust_server_cert') === 'on',
+  };
   await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
 });
 
