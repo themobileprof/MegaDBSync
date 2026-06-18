@@ -1,0 +1,39 @@
+# Binaries
+/megadbsync.exe
+/mdas.exe
+*.exe
+*.exe~
+/dist/
+
+# Local app state (SQLite + DPAPI credentials)
+/data/
+/data-test/
+/testdata-run/
+*.db
+*.db-shm
+*.db-wal
+
+# Go
+/bin/
+/vendor/
+*.test
+*.out
+coverage.*
+*.coverprofile
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

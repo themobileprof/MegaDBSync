@@ -349,6 +349,7 @@ $('#conn-form').addEventListener('submit', async (e) => {
   try {
     await api('/connections', { method: 'POST', body: JSON.stringify(body) });
     $('#conn-msg').textContent = 'Connection saved.';
+    clearConnTestTable();
     e.target.reset();
     updateConnAuthUI();
   } catch (err) {
@@ -356,17 +357,46 @@ $('#conn-form').addEventListener('submit', async (e) => {
   }
 });
 
+function clearConnTestTable() {
+  $('#conn-test-wrap').classList.add('hidden');
+  $('#conn-test-body').innerHTML = '';
+}
+
+function renderConnTestTable(steps) {
+  const wrap = $('#conn-test-wrap');
+  const body = $('#conn-test-body');
+  if (!steps || !steps.length) {
+    clearConnTestTable();
+    return;
+  }
+  body.innerHTML = steps.map((s) => `
+    <tr>
+      <td>${esc(s.name)}</td>
+      <td><span class="badge ${s.status === 'ok' ? 'completed' : 'failed'}">${esc(s.status)}</span></td>
+      <td>${fmtNum(s.duration_ms)} ms</td>
+      <td class="${s.status === 'ok' ? 'muted' : 'error'}">${esc(s.message || '')}</td>
+    </tr>
+  `).join('');
+  wrap.classList.remove('hidden');
+}
+
 $('#test-conn-btn').addEventListener('click', async () => {
   const body = connPayload(new FormData($('#conn-form')));
+  $('#conn-msg').textContent = 'Testing host, port, and database in sequence...';
+  clearConnTestTable();
   try {
-    const res = await api('/connections/test', { method: 'POST', body: JSON.stringify(body) });
-    if (res.empty === false) {
-      $('#conn-msg').textContent = `Connected — destination has ${res.table_count} table(s). Bulk migration will be blocked until empty.`;
+    const res = await api('/connections/test/sequence', { method: 'POST', body: JSON.stringify(body) });
+    renderConnTestTable(res.steps || []);
+    if (res.status === 'error') {
+      $('#conn-msg').textContent = 'Connection test failed at one step. Check the table below.';
+    } else if (res.empty === false) {
+      $('#conn-msg').textContent = `Connection successful — destination has ${res.table_count} table(s). Bulk migration will be blocked until empty.`;
     } else {
-      $('#conn-msg').textContent = res.message ? 'Error: ' + res.message : 'Connection successful.';
+      $('#conn-msg').textContent = 'Connection successful.';
     }
   } catch (err) {
     $('#conn-msg').textContent = err.message;
+    clearConnTestTable();
   }
 });
 

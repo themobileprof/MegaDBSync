@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/status", s.handleStatus)
 	protected.HandleFunc("/events", s.handleSSE)
 	protected.HandleFunc("/connections", s.handleConnections)
+	protected.HandleFunc("/connections/test/sequence", s.handleTestConnectionSequence)
 	protected.HandleFunc("/connections/test", s.handleTestConnection)
 	protected.HandleFunc("/connections/", s.handleConnectionByID)
 	protected.HandleFunc("/jobs", s.handleJobs)
@@ -290,6 +294,133 @@ func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+type connectionTestStep struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+func (s *Server) handleTestConnectionSequence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		store.Connection
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	pass := body.Password
+	if pass == "" && body.ID != "" {
+		var err error
+		pass, err = s.Store.ConnectionPassword(body.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	opts := dbconn.DefaultConnectOpts()
+	timeout := time.Duration(opts.TimeoutSec) * time.Second
+	steps := make([]connectionTestStep, 0, 4)
+	addStep := func(name string, started time.Time, status, msg string) {
+		steps = append(steps, connectionTestStep{
+			Name:       name,
+			Status:     status,
+			Message:    msg,
+			DurationMs: time.Since(started).Milliseconds(),
+		})
+	}
+
+	start := time.Now()
+	if strings.TrimSpace(body.Host) == "" {
+		addStep("Host resolution", start, "error", "host is required")
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": "host is required"})
+		return
+	}
+	lookupCtx, cancelLookup := context.WithTimeout(r.Context(), timeout)
+	_, err := net.DefaultResolver.LookupIPAddr(lookupCtx, body.Host)
+	cancelLookup()
+	if err != nil {
+		addStep("Host resolution", start, "error", err.Error())
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": err.Error()})
+		return
+	}
+	addStep("Host resolution", start, "ok", "DNS/IP lookup successful")
+
+	port := body.Port
+	switch body.Type {
+	case store.ConnOracle:
+		if port == 0 {
+			port = 1521
+		}
+	case store.ConnMSSQL:
+		if port == 0 {
+			port = 1433
+		}
+	default:
+		addStep("Port connectivity", time.Now(), "error", "unsupported connection type")
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": "unsupported connection type"})
+		return
+	}
+
+	start = time.Now()
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(r.Context(), "tcp", net.JoinHostPort(body.Host, strconv.Itoa(port)))
+	if err != nil {
+		addStep("Port connectivity", start, "error", err.Error())
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": err.Error()})
+		return
+	}
+	_ = conn.Close()
+	addStep("Port connectivity", start, "ok", "TCP connection successful")
+
+	start = time.Now()
+	if err := dbconn.TestConnection(r.Context(), body.Connection, pass); err != nil {
+		addStep("Database login", start, "error", err.Error())
+		writeJSON(w, map[string]any{"status": "error", "steps": steps, "message": err.Error()})
+		return
+	}
+	addStep("Database login", start, "ok", "Connected and ping successful")
+
+	resp := map[string]any{
+		"status": "ok",
+		"steps":  steps,
+	}
+	if body.Type == store.ConnMSSQL {
+		start = time.Now()
+		db, err := dbconn.OpenMSSQL(r.Context(), body.Connection, pass)
+		if err != nil {
+			addStep("Destination scan", start, "error", err.Error())
+			resp["status"] = "error"
+			resp["message"] = err.Error()
+			resp["steps"] = steps
+			writeJSON(w, resp)
+			return
+		}
+		count, err := dbconn.DestinationMustBeEmpty(r.Context(), db, body.Schema)
+		_ = db.Close()
+		if err != nil {
+			addStep("Destination scan", start, "error", err.Error())
+			resp["status"] = "error"
+			resp["message"] = err.Error()
+			resp["steps"] = steps
+			writeJSON(w, resp)
+			return
+		}
+		addStep("Destination scan", start, "ok", "Destination metadata check successful")
+		resp["table_count"] = count
+		resp["empty"] = count == 0
+		resp["steps"] = steps
+	}
+
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
