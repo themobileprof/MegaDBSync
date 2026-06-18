@@ -46,6 +46,7 @@ function showMain() {
   $('#logout-btn').classList.remove('hidden');
   startSSE();
   loadSettingsForm();
+  loadConnections().catch(() => {});
 }
 
 async function bootstrap() {
@@ -224,12 +225,20 @@ function renderDashboard(data) {
       </div>`).join('');
   }
 
-  if (data.connections && data.connections.length) {
+  if (Array.isArray(data.connections)) {
     renderConnections(data.connections);
     fillJobSelects(data.connections);
     fillExploreSelects(data.connections);
   }
   renderJobs(data.recent_jobs || []);
+}
+
+async function loadConnections() {
+  const list = await api('/connections');
+  renderConnections(list);
+  fillJobSelects(list);
+  fillExploreSelects(list);
+  return list;
 }
 
 function renderConnections(list) {
@@ -253,6 +262,7 @@ function renderConnections(list) {
     btn.addEventListener('click', async () => {
       if (!confirm('Delete this connection?')) return;
       await api('/connections/' + btn.dataset.del, { method: 'DELETE' });
+      await loadConnections();
     });
   });
 }
@@ -352,6 +362,7 @@ $('#conn-form').addEventListener('submit', async (e) => {
     clearConnTestTable();
     e.target.reset();
     updateConnAuthUI();
+    await loadConnections();
   } catch (err) {
     $('#conn-msg').textContent = err.message;
   }
