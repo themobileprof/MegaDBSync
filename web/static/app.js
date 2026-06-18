@@ -785,6 +785,92 @@ function fillExploreSelects(list) {
   const el = $('#explore-conn-select');
   el.innerHTML = '<option value="">Manual connection…</option>' +
     list.map(c => `<option value="${c.id}">${esc(c.name)} (${c.type})</option>`).join('');
+  const mssql = list.filter(c => c.type === 'mssql');
+  const dest = $('#explore-dest-select');
+  if (dest) {
+    dest.innerHTML = '<option value="">None — Oracle-only analysis</option>' +
+      mssql.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  }
+}
+
+function exploreReportPayload() {
+  const body = explorePayload();
+  const destId = $('#explore-dest-select')?.value;
+  if (destId) body.dest_connection_id = destId;
+  return body;
+}
+
+function renderMigrationReport(report) {
+  const card = $('#explore-report-card');
+  card.classList.remove('hidden');
+  const s = report.summary || {};
+  $('#explore-report-summary').textContent =
+    `${s.table_count || 0} table(s) analyzed` +
+    (s.rows_estimate_known ? ` · ~${fmtNum(s.estimated_rows)} total rows (stats)` : ' · row totals incomplete (missing Oracle stats)') +
+    (s.incremental_notes ? ` — ${s.incremental_notes}` : '');
+
+  const stats = $('#explore-report-stats');
+  stats.innerHTML = [
+    `<span class="badge critical">${s.critical_count || 0} critical</span>`,
+    `<span class="badge warning">${s.warning_count || 0} warning</span>`,
+    `<span class="badge info">${s.info_count || 0} info</span>`,
+    `<span class="badge ${s.bulk_migration_ready ? 'completed' : 'failed'}">Bulk ${s.bulk_migration_ready ? 'ready' : 'blocked'}</span>`,
+    `<span class="badge completed">Schema + sample OK</span>`,
+  ].join('');
+
+  const serverBits = [];
+  if (report.source?.version) serverBits.push(`Oracle: ${report.source.version}`);
+  if (report.source?.details?.user_segment_gb) serverBits.push(`Schema data ~${report.source.details.user_segment_gb} GB (user segments)`);
+  if (report.destination?.server?.version) serverBits.push(`SQL Server: ${report.destination.server.version}`);
+  if (report.destination?.reachable) {
+    serverBits.push(`Destination [${esc(report.destination.schema)}]: ${report.destination.table_count} table(s)`);
+  }
+  $('#explore-report-server').textContent = serverBits.join(' · ');
+
+  const top = $('#explore-report-top');
+  const tops = report.top_risks || [];
+  top.innerHTML = tops.length
+    ? tops.map(t => `<li>${esc(t)}</li>`).join('')
+    : '<li class="muted">No critical or warning issues detected.</li>';
+
+  const findings = report.findings || [];
+  const fEl = $('#explore-report-findings');
+  if (!findings.length) {
+    fEl.className = 'report-findings empty-state';
+    fEl.textContent = 'No findings — schema looks straightforward for migration.';
+  } else {
+    fEl.className = 'report-findings';
+    fEl.innerHTML = findings.map(f => `
+      <div class="report-finding ${esc(f.severity)}">
+        <div class="report-finding-meta">
+          <span class="badge ${esc(f.severity)}">${esc(f.severity)}</span>
+          <span class="badge pending">${esc(f.category)}</span>
+          ${f.table ? `<span class="muted">${esc(f.table)}${f.column ? '.' + esc(f.column) : ''}</span>` : ''}
+        </div>
+        <div>${esc(f.message)}</div>
+        ${f.recommendation ? `<div class="report-finding-rec">${esc(f.recommendation)}</div>` : ''}
+      </div>`).join('');
+  }
+
+  const tables = report.tables || [];
+  const tEl = $('#explore-report-tables');
+  if (!tables.length) {
+    tEl.className = 'report-tables empty-state';
+    tEl.textContent = 'No tables analyzed.';
+  } else {
+    tEl.className = 'report-tables';
+    tEl.innerHTML = tables.map(t => `
+      <div class="report-table-item ${esc(t.risk_level)}">
+        <div class="task-meta">
+          <strong>${esc(t.label)}</strong>
+          <span class="badge ${esc(t.risk_level)}">${esc(t.risk_level)}</span>
+        </div>
+        <div class="muted">${fmtNum(t.row_count)} rows · ${t.column_count} cols · sync: ${esc(t.sync_mode || '—')}${t.primary_keys?.length ? ' · PK: ' + esc(t.primary_keys.join(', ')) : ''}</div>
+        ${t.mssql_ddl ? `<div class="report-table-ddl">MSSQL: ${esc(t.mssql_ddl)}</div>` : ''}
+        ${(t.findings || []).filter(f => f.severity !== 'info').slice(0, 3).map(f => `<div class="muted" style="margin-top:0.25rem">• ${esc(f.message)}</div>`).join('')}
+      </div>`).join('');
+  }
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function explorePayload(extra = {}) {
@@ -848,6 +934,30 @@ $('#explore-list-btn').addEventListener('click', async (e) => {
     $('#explore-msg').textContent = `${(res.tables || []).length} table(s) found.`;
     $('#explore-msg').className = 'muted';
   }, { pending: 'Listing…', success: 'Listed', toast: false });
+});
+
+$('#explore-report-btn').addEventListener('click', async (e) => {
+  const type = $('#explore-conn-select').value
+    ? (exploreConnections.find(c => c.id === $('#explore-conn-select').value)?.type || $('#explore-type').value)
+    : $('#explore-type').value;
+  if (type !== 'oracle') {
+    showToast('Migration report requires an Oracle source connection', 'error');
+    return;
+  }
+  const schema = ($('#explore-form [name=schema]').value || '').trim();
+  if (!schema && !$('#explore-conn-select').value) {
+    showToast('Set Oracle schema (owner) on the connection', 'error');
+    return;
+  }
+  await withBtn(e.currentTarget, async () => {
+    const report = await api('/explore/migration-report', {
+      method: 'POST',
+      body: JSON.stringify(exploreReportPayload()),
+    });
+    renderMigrationReport(report);
+    $('#explore-msg').textContent = `Report generated — ${report.summary?.critical_count || 0} critical, ${report.summary?.warning_count || 0} warning.`;
+    $('#explore-msg').className = 'muted';
+  }, { pending: 'Analyzing…', success: 'Report ready', toast: 'Migration readiness report generated' });
 });
 
 function renderExploreTables(tables) {

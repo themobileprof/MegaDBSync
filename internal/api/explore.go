@@ -129,6 +129,87 @@ func (s *Server) handleExploreSchema(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"columns": cols})
 }
 
+type migrationReportRequest struct {
+	exploreRequest
+	DestConnectionID string           `json:"dest_connection_id"`
+	Dest             store.Connection `json:"dest"`
+	DestPassword     string           `json:"dest_password"`
+}
+
+func (s *Server) handleExploreMigrationReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErrorJSON(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req migrationReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	src, pass, err := s.resolveExploreConnFromReq(r.Context(), req.exploreRequest)
+	if err != nil {
+		writeErrorJSON(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if src.Type != store.ConnOracle {
+		writeErrorJSON(w, "migration report requires an Oracle source connection", http.StatusBadRequest)
+		return
+	}
+	owner := strings.TrimSpace(src.Schema)
+	if owner == "" {
+		writeErrorJSON(w, "Oracle schema (owner) is required on the source connection", http.StatusBadRequest)
+		return
+	}
+
+	st, _ := s.Store.GetSettings()
+	rowCountCap := st.DefaultRowCountFallbackCap
+
+	ora, err := dbconn.OpenOracle(r.Context(), src, pass)
+	if err != nil {
+		writeErrorJSON(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer ora.Close()
+
+	var destConn *store.Connection
+	var destPass string
+	if req.DestConnectionID != "" {
+		c, err := s.Store.GetConnection(req.DestConnectionID)
+		if err != nil {
+			writeErrorJSON(w, "invalid destination connection", http.StatusBadRequest)
+			return
+		}
+		destConn = &c
+		destPass, err = s.Store.ConnectionPassword(req.DestConnectionID)
+		if err != nil {
+			writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if req.DestPassword != "" {
+			destPass = req.DestPassword
+		}
+	} else if req.Dest.Host != "" {
+		c := req.Dest
+		if c.Type == "" {
+			c.Type = store.ConnMSSQL
+		}
+		destConn = &c
+		destPass = req.DestPassword
+	}
+
+	if destConn != nil && destConn.Type != store.ConnMSSQL {
+		writeErrorJSON(w, "destination must be SQL Server", http.StatusBadRequest)
+		return
+	}
+
+	report, err := dbconn.BuildOracleMigrationReport(r.Context(), ora, owner, rowCountCap, destConn, destPass)
+	if err != nil {
+		writeErrorJSON(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, report)
+}
+
 func (s *Server) resolveExploreConn(r *http.Request) (store.Connection, string, error) {
 	var req exploreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

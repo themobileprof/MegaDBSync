@@ -252,14 +252,32 @@
               </label>
               <div class="form-actions">
                 <button class="btn primary" type="button" id="explore-list-btn">List tables</button>
+                <button class="btn" type="button" id="explore-report-btn">Migration readiness report</button>
               </div>
             </form>
+            <label class="explore-dest-label">Optional SQL Server destination (bulk readiness)
+              <select id="explore-dest-select">
+                <option value="">None — Oracle-only analysis</option>
+              </select>
+            </label>
             <p id="explore-msg" class="muted"></p>
           </div>
           <div class="card">
             <h3>Tables</h3>
             <div id="explore-table-list" class="explore-table-list empty-state">Connect and list tables to begin.</div>
           </div>
+        </div>
+        <div class="card hidden" id="explore-report-card">
+          <h3>Migration readiness report</h3>
+          <p id="explore-report-summary" class="muted"></p>
+          <div id="explore-report-stats" class="report-stats"></div>
+          <div id="explore-report-server" class="muted report-server"></div>
+          <h4>Top risks</h4>
+          <ul id="explore-report-top" class="report-list"></ul>
+          <h4>All findings</h4>
+          <div id="explore-report-findings" class="report-findings empty-state">No findings.</div>
+          <h4>Tables</h4>
+          <div id="explore-report-tables" class="report-tables empty-state">No tables analyzed.</div>
         </div>
         <div class="card hidden" id="explore-detail-card">
           <h3 id="explore-detail-title">Table details</h3>
