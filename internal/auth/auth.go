@@ -65,7 +65,7 @@ func (m *Manager) Login(w http.ResponseWriter, plain string) bool {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	return true

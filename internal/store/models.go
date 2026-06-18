@@ -91,6 +91,7 @@ type AppSettings struct {
 	ScheduleDestID    string `json:"schedule_dest_id"`
 	DefaultBatchSize  int    `json:"default_batch_size"`
 	DefaultParallel   int    `json:"default_parallel"`
+	EngineEnabled     bool   `json:"engine_enabled"`
 }
 
 type ActivityEvent struct {
@@ -107,5 +108,6 @@ type DashboardState struct {
 	TableTasks  []TableTask  `json:"table_tasks"`
 	Events      []ActivityEvent `json:"events"`
 	Connections []Connection `json:"connections"`
-	Working     bool         `json:"working"`
+	Working       bool         `json:"working"`
+	EngineEnabled bool         `json:"engine_enabled"`
 }

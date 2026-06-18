@@ -44,6 +44,7 @@
         <button class="tab active" data-tab="dashboard" type="button">Dashboard</button>
         <button class="tab" data-tab="connections" type="button">Connections</button>
         <button class="tab" data-tab="jobs" type="button">Jobs</button>
+        <button class="tab" data-tab="explore" type="button">Explore</button>
         <button class="tab" data-tab="settings" type="button">Settings</button>
       </nav>
 
@@ -56,7 +57,12 @@
           </div>
           <div class="hero-copy">
             <h2 id="status-headline">Idle</h2>
-            <p id="status-detail" class="muted">No active migration. Background workers keep running when this page is closed.</p>
+            <p id="status-detail" class="muted">Migration engine is stopped. Start it here before running jobs or scheduled sync.</p>
+            <div id="engine-controls" class="engine-controls">
+              <span id="engine-badge" class="badge cancelled">Engine stopped</span>
+              <button id="engine-start-btn" class="btn primary" type="button">Start engine</button>
+              <button id="engine-stop-btn" class="btn danger hidden" type="button">Stop engine</button>
+            </div>
           </div>
         </div>
 
@@ -149,11 +155,68 @@
               <button class="btn danger" type="button" id="cancel-job-btn">Cancel active job</button>
             </div>
           </form>
-          <p class="muted note">Bulk jobs refuse to run unless the destination has zero user tables.</p>
+          <p class="muted note">Bulk jobs refuse to run unless the destination has zero user tables. The migration engine must be running (Dashboard → Start engine).</p>
         </div>
         <div class="card">
           <h3>Recent jobs</h3>
           <div id="job-list" class="job-list empty-state">No jobs yet.</div>
+        </div>
+      </section>
+
+      <section id="tab-explore" class="tab-panel">
+        <div class="grid two">
+          <div class="card">
+            <h3>Connection target</h3>
+            <form id="explore-form" class="form-grid">
+              <label>Use saved connection
+                <select name="connection_id" id="explore-conn-select">
+                  <option value="">Manual connection…</option>
+                </select>
+              </label>
+              <label>Type
+                <select name="type" id="explore-type">
+                  <option value="oracle">Oracle</option>
+                  <option value="mssql">SQL Server</option>
+                </select>
+              </label>
+              <label>Host<input name="host" placeholder="localhost or IP"></label>
+              <label>Port<input name="port" type="number" placeholder="1521 / 1433"></label>
+              <label>Database<input name="database" placeholder="Service name or DB name"></label>
+              <label>Schema<input name="schema" placeholder="Owner / schema filter"></label>
+              <label>Username<input name="username" id="explore-username"></label>
+              <label id="explore-password-wrap">Password<input name="password" type="password"></label>
+              <label id="explore-windows-wrap" class="checkbox-row hidden">
+                <input name="windows_auth" type="checkbox" value="1" id="explore-windows-auth">
+                Windows integrated authentication
+              </label>
+              <div class="form-actions">
+                <button class="btn primary" type="button" id="explore-list-btn">List tables</button>
+              </div>
+            </form>
+            <p id="explore-msg" class="muted"></p>
+          </div>
+          <div class="card">
+            <h3>Tables</h3>
+            <div id="explore-table-list" class="explore-table-list empty-state">Connect and list tables to begin.</div>
+          </div>
+        </div>
+        <div class="card hidden" id="explore-detail-card">
+          <h3 id="explore-detail-title">Table details</h3>
+          <div class="form-actions" style="margin-bottom:0.75rem">
+            <button class="btn" type="button" id="explore-sample-btn">Load sample (5 rows)</button>
+            <button class="btn ghost" type="button" id="explore-sample-dl">Download CSV</button>
+            <button class="btn" type="button" id="explore-schema-btn">Load schema</button>
+            <button class="btn ghost" type="button" id="explore-schema-json-dl">Download JSON</button>
+            <button class="btn ghost" type="button" id="explore-schema-ddl-dl">Download DDL</button>
+          </div>
+          <div id="explore-sample-wrap" class="hidden">
+            <h4>Sample data</h4>
+            <div id="explore-sample-table" class="sample-table-wrap"></div>
+          </div>
+          <div id="explore-schema-wrap" class="hidden">
+            <h4>Schema</h4>
+            <pre id="explore-schema-pre" class="schema-pre"></pre>
+          </div>
         </div>
       </section>
 

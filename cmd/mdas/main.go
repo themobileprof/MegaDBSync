@@ -52,17 +52,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/index.html", http.StatusTemporaryRedirect)
-			return
-		}
-		web.Handler().ServeHTTP(w, r)
-	}))
+	mux.Handle("/", web.Handler())
 
 	log.Printf("MDAS listening on http://%s", *addr)
 	log.Printf("State directory: %s", *dataDir)
-	log.Printf("Close the browser anytime — background jobs keep running until you stop this process.")
+	log.Printf("Open the URL above in your browser. The migration engine is stopped until you start it from the dashboard.")
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
 	}

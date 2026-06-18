@@ -37,6 +37,10 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/jobs/", s.handleJobByID)
 	protected.HandleFunc("/settings", s.handleSettings)
 	protected.HandleFunc("/settings/password", s.handleChangePassword)
+	protected.HandleFunc("/engine/", s.handleEngine)
+	protected.HandleFunc("/explore/tables", s.handleExploreTables)
+	protected.HandleFunc("/explore/sample", s.handleExploreSample)
+	protected.HandleFunc("/explore/schema", s.handleExploreSchema)
 	mux.Handle("/api/", http.StripPrefix("/api", s.Auth.Middleware(protected)))
 	return mux
 }
@@ -52,27 +56,27 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorJSON(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.Auth.HasPassword() {
-		http.Error(w, "already configured", http.StatusConflict)
+		writeErrorJSON(w, "already configured", http.StatusConflict)
 		return
 	}
 	var body struct {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Password) < 8 {
-		http.Error(w, "password must be at least 8 characters", http.StatusBadRequest)
+		writeErrorJSON(w, "password must be at least 8 characters", http.StatusBadRequest)
 		return
 	}
 	hash, err := auth.HashPassword(body.Password)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := s.Store.SetAdminPasswordHash(hash); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Auth.SetPasswordHash(hash)
@@ -82,12 +86,12 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorJSON(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	st, err := s.Store.GetSettings()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Auth.SetPasswordHash(st.AdminPasswordHash)
@@ -95,15 +99,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeErrorJSON(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	if !s.Auth.HasPassword() {
-		http.Error(w, "setup required", http.StatusPreconditionRequired)
+		writeErrorJSON(w, "setup required", http.StatusPreconditionRequired)
 		return
 	}
 	if !s.Auth.Login(w, body.Password) {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		writeErrorJSON(w, "invalid password", http.StatusUnauthorized)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
@@ -366,7 +370,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 				job.Status = store.JobFailed
 				job.ErrorMessage = err.Error()
 				_ = s.Store.UpdateJob(job)
-				http.Error(w, err.Error(), http.StatusConflict)
+				writeErrorJSON(w, err.Error(), http.StatusConflict)
 				return
 			}
 			job, _ = s.Store.GetJob(job.ID)
@@ -387,7 +391,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) > 1 && parts[1] == "start" && r.Method == http.MethodPost {
 		if err := s.Runner.StartJob(id); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
+			writeErrorJSON(w, err.Error(), http.StatusConflict)
 			return
 		}
 		job, _ := s.Store.GetJob(id)
@@ -468,6 +472,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"schedule_dest_id":    st.ScheduleDestID,
 			"default_batch_size":  st.DefaultBatchSize,
 			"default_parallel":    st.DefaultParallel,
+			"engine_enabled":      st.EngineEnabled,
 			"has_password":        st.AdminPasswordHash != "",
 		})
 	case http.MethodPut:

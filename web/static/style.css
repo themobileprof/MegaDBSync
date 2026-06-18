@@ -236,6 +236,35 @@ body {
   100% { width: 10%; margin-left: 90%; }
 }
 
+.engine-controls {
+  display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-top: 0.85rem;
+}
+
+.explore-table-list {
+  max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 0.35rem;
+}
+.explore-table-item {
+  padding: 0.55rem 0.65rem; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--bg-elevated); cursor: pointer;
+}
+.explore-table-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(79,140,255,0.35); }
+.explore-table-item:hover { border-color: rgba(79,140,255,0.55); }
+
+.sample-table-wrap { overflow: auto; max-height: 280px; }
+.sample-table-wrap table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+.sample-table-wrap th, .sample-table-wrap td {
+  border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left;
+  white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+.sample-table-wrap th { background: var(--bg-elevated); position: sticky; top: 0; }
+
+.schema-pre {
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.75rem; overflow: auto; max-height: 320px; font-size: 0.82rem;
+}
+
 @media (max-width: 640px) {
   .hero-status { flex-direction: column; text-align: center; }
 }

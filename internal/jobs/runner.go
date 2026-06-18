@@ -41,6 +41,13 @@ func (r *Runner) Notify() <-chan struct{} {
 func (r *Runner) StartJob(jobID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	st, err := r.Store.GetSettings()
+	if err != nil {
+		return err
+	}
+	if !st.EngineEnabled {
+		return errEngineStopped
+	}
 	if r.cancel != nil {
 		return errJobRunning
 	}
@@ -164,7 +171,7 @@ func (s *Scheduler) loop() {
 
 func (s *Scheduler) maybeRunIncremental() {
 	st, err := s.Store.GetSettings()
-	if err != nil || st.ScheduleCron == "" {
+	if err != nil || st.ScheduleCron == "" || !st.EngineEnabled {
 		return
 	}
 	if !cronDue(st.ScheduleCron, time.Now()) {
@@ -211,6 +218,7 @@ var (
 	errJobRunning     = errString("a job is already running")
 	errInvalidStatus  = errString("job cannot be started in its current status")
 	errUnknownJobType = errString("unknown job type")
+	errEngineStopped  = errString("migration engine is stopped — start it from the dashboard")
 )
 
 type errString string

@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS settings (
   schedule_source_id TEXT NOT NULL DEFAULT '',
   schedule_dest_id TEXT NOT NULL DEFAULT '',
   default_batch_size INTEGER NOT NULL DEFAULT 50000,
-  default_parallel INTEGER NOT NULL DEFAULT 2
+  default_parallel INTEGER NOT NULL DEFAULT 2,
+  engine_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS connections (
@@ -150,19 +151,31 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN schedule_source_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN schedule_dest_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE connections ADD COLUMN windows_auth INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN engine_enabled INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
 func (s *Store) GetSettings() (AppSettings, error) {
 	var st AppSettings
-	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel FROM settings WHERE id = 1`).
-		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel)
+	var engine int
+	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, engine_enabled FROM settings WHERE id = 1`).
+		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &engine)
+	st.EngineEnabled = engine == 1
 	return st, err
 }
 
 func (s *Store) UpdateSettings(st AppSettings) error {
 	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=? WHERE id=1`,
 		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel)
+	return err
+}
+
+func (s *Store) SetEngineEnabled(on bool) error {
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE settings SET engine_enabled=? WHERE id=1`, v)
 	return err
 }
 
@@ -478,6 +491,10 @@ func (s *Store) dashboard(includeConnections bool) (DashboardState, error) {
 		}
 	}
 	ds.Working = active != nil && active.Status == JobRunning
+	st, err := s.GetSettings()
+	if err == nil {
+		ds.EngineEnabled = st.EngineEnabled
+	}
 	return ds, nil
 }
 

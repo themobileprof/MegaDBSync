@@ -3,6 +3,8 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let authed = false;
 let eventSource = null;
+let exploreSelected = null;
+let exploreConnections = [];
 
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
@@ -18,7 +20,7 @@ async function api(path, opts = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
-    const msg = (data && data.message) || (typeof data === 'string' ? data : res.statusText);
+    const msg = (data && (data.message || data.error)) || (typeof data === 'string' ? data : res.statusText);
     throw new Error(msg || 'Request failed');
   }
   return data;
@@ -102,17 +104,32 @@ function fmtTime(ts) {
 
 function renderDashboard(data) {
   const working = data.working;
+  const engineOn = !!data.engine_enabled;
   const anim = $('#status-anim');
   const indicator = $('#work-indicator');
   anim.classList.toggle('working', working);
   anim.classList.toggle('idle', !working);
   indicator.classList.toggle('hidden', !working);
 
+  const badge = $('#engine-badge');
+  badge.textContent = engineOn ? 'Engine running' : 'Engine stopped';
+  badge.className = 'badge ' + (engineOn ? 'running' : 'cancelled');
+  $('#engine-start-btn').classList.toggle('hidden', engineOn);
+  $('#engine-stop-btn').classList.toggle('hidden', !engineOn);
+
   const job = data.active_job;
   const card = $('#active-job-card');
   if (!job) {
-    $('#status-headline').textContent = 'Idle';
-    $('#status-detail').textContent = 'No active migration. Close this page anytime — workers keep running in the background.';
+    if (!engineOn) {
+      $('#status-headline').textContent = 'Engine stopped';
+      $('#status-detail').textContent = 'Start the migration engine to run jobs or scheduled incremental sync.';
+    } else if (working) {
+      $('#status-headline').textContent = 'Working';
+      $('#status-detail').textContent = 'Background migration activity in progress.';
+    } else {
+      $('#status-headline').textContent = 'Ready';
+      $('#status-detail').textContent = 'Engine is running. Create a job on the Jobs tab when you are ready.';
+    }
     card.classList.add('hidden');
   } else {
     card.classList.remove('hidden');
@@ -164,6 +181,7 @@ function renderDashboard(data) {
   if (data.connections && data.connections.length) {
     renderConnections(data.connections);
     fillJobSelects(data.connections);
+    fillExploreSelects(data.connections);
   }
   renderJobs(data.recent_jobs || []);
 }
@@ -359,5 +377,211 @@ $('#password-form').addEventListener('submit', async (e) => {
     $('#password-msg').className = 'error';
   }
 });
+
+$('#engine-start-btn').addEventListener('click', async () => {
+  try {
+    await api('/engine/start', { method: 'POST', body: '{}' });
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#engine-stop-btn').addEventListener('click', async () => {
+  if (!confirm('Stop the migration engine? Running jobs will be cancelled.')) return;
+  try {
+    await api('/engine/stop', { method: 'POST', body: '{}' });
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+function fillExploreSelects(list) {
+  exploreConnections = list;
+  const el = $('#explore-conn-select');
+  el.innerHTML = '<option value="">Manual connection…</option>' +
+    list.map(c => `<option value="${c.id}">${esc(c.name)} (${c.type})</option>`).join('');
+}
+
+function explorePayload(extra = {}) {
+  const fd = new FormData($('#explore-form'));
+  const body = Object.fromEntries(fd.entries());
+  body.port = parseInt(body.port || '0', 10);
+  body.windows_auth = body.windows_auth === '1';
+  if (!body.connection_id) delete body.connection_id;
+  return { ...body, ...extra };
+}
+
+function applyExploreSavedConn() {
+  const id = $('#explore-conn-select').value;
+  const manual = !id;
+  ['host', 'port', 'database', 'schema', 'username', 'password'].forEach((name) => {
+    const input = $(`#explore-form [name=${name}]`);
+    if (input) input.disabled = !manual;
+  });
+  $('#explore-type').disabled = !manual;
+  $('#explore-windows-auth').disabled = !manual;
+  if (id) {
+    const c = exploreConnections.find(x => x.id === id);
+    if (c) {
+      $('#explore-type').value = c.type;
+      $('#explore-form [name=host]').value = c.host || '';
+      $('#explore-form [name=port]').value = c.port || '';
+      $('#explore-form [name=database]').value = c.database || '';
+      $('#explore-form [name=schema]').value = c.schema || '';
+      $('#explore-form [name=username]').value = c.username || '';
+      $('#explore-form [name=password]').value = '';
+      $('#explore-windows-auth').checked = !!c.windows_auth;
+    }
+  }
+  updateExploreAuthUI();
+}
+
+function updateExploreAuthUI() {
+  const manual = !$('#explore-conn-select').value;
+  const type = $('#explore-type').value;
+  const winAuth = $('#explore-windows-auth').checked;
+  const showWin = manual && type === 'mssql';
+  $('#explore-windows-wrap').classList.toggle('hidden', !showWin);
+  const sqlLogin = !(showWin && winAuth);
+  if (manual) $('#explore-username').required = sqlLogin;
+  $('#explore-password-wrap').classList.toggle('hidden', !sqlLogin || !manual);
+}
+
+$('#explore-conn-select').addEventListener('change', applyExploreSavedConn);
+$('#explore-type').addEventListener('change', updateExploreAuthUI);
+$('#explore-windows-auth').addEventListener('change', updateExploreAuthUI);
+
+$('#explore-list-btn').addEventListener('click', async () => {
+  $('#explore-msg').textContent = 'Connecting…';
+  exploreSelected = null;
+  $('#explore-detail-card').classList.add('hidden');
+  try {
+    const res = await api('/explore/tables', {
+      method: 'POST',
+      body: JSON.stringify(explorePayload()),
+    });
+    renderExploreTables(res.tables || []);
+    $('#explore-msg').textContent = `${(res.tables || []).length} table(s) found.`;
+  } catch (err) {
+    $('#explore-msg').textContent = err.message;
+    $('#explore-table-list').className = 'explore-table-list empty-state';
+    $('#explore-table-list').textContent = 'Could not list tables.';
+  }
+});
+
+function renderExploreTables(tables) {
+  const el = $('#explore-table-list');
+  if (!tables.length) {
+    el.className = 'explore-table-list empty-state';
+    el.textContent = 'No tables found for this target.';
+    return;
+  }
+  el.className = 'explore-table-list';
+  el.innerHTML = tables.map(t => {
+    const key = `${t.schema}.${t.name}`;
+    return `<button type="button" class="explore-table-item" data-schema="${esc(t.schema)}" data-name="${esc(t.name)}">${esc(key)}</button>`;
+  }).join('');
+  el.querySelectorAll('.explore-table-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      el.querySelectorAll('.explore-table-item').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      exploreSelected = { schema: btn.dataset.schema, name: btn.dataset.name };
+      $('#explore-detail-card').classList.remove('hidden');
+      $('#explore-detail-title').textContent = exploreSelected.schema + '.' + exploreSelected.name;
+      $('#explore-sample-wrap').classList.add('hidden');
+      $('#explore-schema-wrap').classList.add('hidden');
+    });
+  });
+}
+
+async function exploreTableRequest(path, extraQuery = '') {
+  if (!exploreSelected) throw new Error('Select a table first');
+  return explorePayload({
+    table_schema: exploreSelected.schema,
+    table_name: exploreSelected.name,
+    limit: 5,
+  });
+}
+
+$('#explore-sample-btn').addEventListener('click', async () => {
+  try {
+    const body = await exploreTableRequest();
+    const sample = await api('/explore/sample', { method: 'POST', body: JSON.stringify(body) });
+    renderSampleTable(sample);
+    $('#explore-sample-wrap').classList.remove('hidden');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+function renderSampleTable(sample) {
+  const cols = sample.columns || [];
+  const rows = sample.rows || [];
+  const head = cols.map(c => `<th>${esc(c)}</th>`).join('');
+  const body = rows.map(r => `<tr>${r.map(v => `<td title="${esc(v)}">${esc(v)}</td>`).join('')}</tr>`).join('');
+  $('#explore-sample-table').innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function downloadExplore(path, query, filename) {
+  const body = await exploreTableRequest();
+  const res = await fetch('/api' + path + query, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = res.statusText;
+    try { msg = JSON.parse(text).message || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('#explore-sample-dl').addEventListener('click', async () => {
+  try {
+    const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.sample.csv` : 'sample.csv';
+    await downloadExplore('/explore/sample', '?download=csv', name);
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#explore-schema-btn').addEventListener('click', async () => {
+  try {
+    const body = await exploreTableRequest();
+    const res = await api('/explore/schema', { method: 'POST', body: JSON.stringify(body) });
+    $('#explore-schema-pre').textContent = JSON.stringify(res.columns || [], null, 2);
+    $('#explore-schema-wrap').classList.remove('hidden');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#explore-schema-json-dl').addEventListener('click', async () => {
+  try {
+    const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.schema.json` : 'schema.json';
+    await downloadExplore('/explore/schema', '?download=json', name);
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#explore-schema-ddl-dl').addEventListener('click', async () => {
+  try {
+    const name = exploreSelected ? `${exploreSelected.schema}.${exploreSelected.name}.schema.sql` : 'schema.sql';
+    await downloadExplore('/explore/schema', '?download=ddl', name);
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+applyExploreSavedConn();
 
 bootstrap();
