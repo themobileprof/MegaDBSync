@@ -77,6 +77,25 @@ Open http://127.0.0.1:8080 — create an admin password, add connections, **Star
 
 State is stored under **`%ProgramData%\MegaDBSync\`** by default (override with `-data` or `%MEGADBSYNC_DATA%`).
 
+### Stop the server
+
+This stops the **HTTP process** (`megadbsync.exe`), not just the migration engine.
+
+| How you run it | How to stop |
+|----------------|-------------|
+| **Terminal / dev** (foreground) | Press **Ctrl+C** in that console window |
+| **Background / unknown PID** | `Get-NetTCPConnection -LocalPort 8080 \| Select OwningProcess` then `Stop-Process -Id <pid> -Force` |
+| **Windows service (NSSM)** | `nssm stop MegaDBSync` or `Stop-Service MegaDBSync` |
+| **Windows service (`sc`)** | `Stop-Service MegaDBSync` |
+
+```powershell
+# Quick stop when something is listening on 8080
+$pid = (Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)
+if ($pid) { Stop-Process -Id $pid -Force; Write-Host "Stopped process $pid" }
+```
+
+To **pause jobs but keep the UI running**, use **Dashboard → Stop engine** instead (running migrations are paused; the web server stays up).
+
 ---
 
 ## Usage notes
