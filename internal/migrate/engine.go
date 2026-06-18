@@ -54,7 +54,13 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 			return fmt.Errorf("destination check: %w", err)
 		}
 		if count > 0 {
-			return fmt.Errorf("destination database is not empty (%d tables found); bulk migration refused to protect existing data", count)
+			tables, _ := dbconn.ListDestinationTables(ctx, mssqlDB, dst.Schema)
+			var resumableID, resumableStatus string
+			if resumable, _ := e.Store.FindResumableBulkJob(job.SourceID, job.DestID); resumable != nil {
+				resumableID = resumable.ID
+				resumableStatus = string(resumable.Status)
+			}
+			return fmt.Errorf("%s", dbconn.FormatBulkBlockedError(dst.Schema, count, tables, resumableID, resumableStatus))
 		}
 	}
 

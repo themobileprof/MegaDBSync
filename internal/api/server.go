@@ -428,12 +428,8 @@ func (s *Server) handleTestConnectionSequence(w http.ResponseWriter, r *http.Req
 			writeJSON(w, resp)
 			return
 		}
-		msg := "Destination metadata check successful"
-		if schemaName != "" {
-			msg = fmt.Sprintf("Schema %q has %d table(s) — bulk migration %s", schemaName, count, bulkMigrationNote(count))
-		} else if count > 0 {
-			msg = fmt.Sprintf("Destination has %d table(s) — bulk migration will be blocked until empty", count)
-		}
+		destSchema := dbconn.EffectiveDestSchema(body.Schema)
+		msg := fmt.Sprintf("Schema [%s] has %d table(s) — bulk migration %s", destSchema, count, bulkMigrationNote(count))
 		addStep("Destination scan", start, "ok", msg)
 		resp["table_count"] = count
 		resp["empty"] = count == 0
@@ -521,13 +517,22 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			count, err := dbconn.DestinationMustBeEmpty(r.Context(), db, dst.Schema)
+			var tables []string
+			if err == nil && count > 0 {
+				tables, _ = dbconn.ListDestinationTables(r.Context(), db, dst.Schema)
+			}
 			_ = db.Close()
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			if count > 0 {
-				http.Error(w, "destination is not empty; bulk migration blocked (resume a paused job to continue)", http.StatusConflict)
+				var resumableID, resumableStatus string
+				if resumable, _ := s.Store.FindResumableBulkJob(body.SourceID, body.DestID); resumable != nil {
+					resumableID = resumable.ID
+					resumableStatus = string(resumable.Status)
+				}
+				http.Error(w, dbconn.FormatBulkBlockedError(dst.Schema, count, tables, resumableID, resumableStatus), http.StatusConflict)
 				return
 			}
 		}

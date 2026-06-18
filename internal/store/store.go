@@ -392,6 +392,23 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 	return out, rows.Err()
 }
 
+// FindResumableBulkJob returns a paused or failed bulk job for the same source/destination pair.
+func (s *Store) FindResumableBulkJob(sourceID, destID string) (*Job, error) {
+	row := s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
+  date_column, date_from, date_to, max_rows_per_table, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
+  started_at, completed_at, created_at, updated_at FROM jobs
+  WHERE type=? AND source_id=? AND dest_id=? AND status IN (?, ?)
+  ORDER BY created_at DESC LIMIT 1`, JobBulkFull, sourceID, destID, JobPaused, JobFailed)
+	j, err := scanJob(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
 func (s *Store) ActiveJob() (*Job, error) {
 	j, err := scanJob(s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
   date_column, date_from, date_to, max_rows_per_table, error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,

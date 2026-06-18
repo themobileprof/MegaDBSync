@@ -135,25 +135,74 @@ func TestConnection(ctx context.Context, c store.Connection, password string) er
 	}
 }
 
-// DestinationMustBeEmpty blocks bulk loads into non-empty MSSQL databases.
-func DestinationMustBeEmpty(ctx context.Context, db *sql.DB, schema string) (int, error) {
-	query := `
-SELECT COUNT(*)
+// EffectiveDestSchema is the SQL Server schema MegaDBSync writes to (dbo when unset).
+func EffectiveDestSchema(schema string) string {
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		return "dbo"
+	}
+	return schema
+}
+
+const destUserTablesQuery = `
 FROM sys.tables t
 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
 WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest','db_accessadmin','db_backupoperator',
   'db_datareader','db_datawriter','db_ddladmin','db_denydatareader','db_denydatawriter',
   'db_owner','db_securityadmin')`
-	args := []any{}
-	if schema != "" {
-		query += ` AND s.name = @p1`
-		args = append(args, sql.Named("p1", schema))
-	}
+
+// DestinationMustBeEmpty blocks bulk loads into non-empty MSSQL schemas.
+// When schema is blank, only [dbo] is checked — matching where migrations write tables.
+func DestinationMustBeEmpty(ctx context.Context, db *sql.DB, schema string) (int, error) {
+	schema = EffectiveDestSchema(schema)
+	query := `SELECT COUNT(*) ` + destUserTablesQuery + ` AND s.name = @p1`
 	var count int
-	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, query, sql.Named("p1", schema)).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
+}
+
+// ListDestinationTables returns user table names in the effective destination schema.
+func ListDestinationTables(ctx context.Context, db *sql.DB, schema string) ([]string, error) {
+	schema = EffectiveDestSchema(schema)
+	q := `SELECT TOP (25) s.name + '.' + t.name ` + destUserTablesQuery + ` AND s.name = @p1 ORDER BY s.name, t.name`
+	rows, err := db.QueryContext(ctx, q, sql.Named("p1", schema))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// FormatBulkBlockedError builds an actionable message when bulk migration is refused.
+func FormatBulkBlockedError(schema string, count int, tables []string, resumableJobID, resumableStatus string) string {
+	scope := EffectiveDestSchema(schema)
+	msg := fmt.Sprintf("bulk migration blocked: %d table(s) still exist in schema [%s]", count, scope)
+	if len(tables) > 0 {
+		n := len(tables)
+		if n > 8 {
+			n = 8
+		}
+		msg += fmt.Sprintf(" (e.g. %s)", strings.Join(tables[:n], ", "))
+		if len(tables) > n {
+			msg += ", …"
+		}
+	}
+	if resumableJobID != "" {
+		msg += fmt.Sprintf(". Resume the existing %s bulk job instead of starting a new one", resumableStatus)
+	} else {
+		msg += ". Drop those tables (or use a new empty database), or run date-range/incremental sync instead"
+	}
+	return msg
 }
 
 func ListOracleTables(ctx context.Context, db *sql.DB, ownerFilter string) ([]TableMeta, error) {
