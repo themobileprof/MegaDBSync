@@ -302,13 +302,14 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, list)
 	case http.MethodPost:
 		var body struct {
-			Type           store.JobType `json:"type"`
-			SourceID       string        `json:"source_id"`
-			DestID         string        `json:"dest_id"`
-			BatchSize      int           `json:"batch_size"`
-			ParallelTables int           `json:"parallel_tables"`
-			TableFilter    string        `json:"table_filter"`
-			Start          bool          `json:"start"`
+			Type            store.JobType `json:"type"`
+			SourceID        string        `json:"source_id"`
+			DestID          string        `json:"dest_id"`
+			BatchSize       int           `json:"batch_size"`
+			ParallelTables  int           `json:"parallel_tables"`
+			ChunkTimeoutSec int           `json:"chunk_timeout_sec"`
+			TableFilter     string        `json:"table_filter"`
+			Start           bool          `json:"start"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -323,7 +324,8 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		job := store.Job{
 			Type: body.Type, SourceID: body.SourceID, DestID: body.DestID,
-			BatchSize: body.BatchSize, ParallelTables: body.ParallelTables, TableFilter: body.TableFilter,
+			BatchSize: body.BatchSize, ParallelTables: body.ParallelTables,
+			ChunkTimeoutSec: body.ChunkTimeoutSec, TableFilter: body.TableFilter,
 		}
 		if job.Type == "" {
 			job.Type = store.JobBulkFull
@@ -356,7 +358,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if count > 0 {
-				http.Error(w, "destination is not empty; bulk migration blocked", http.StatusConflict)
+				http.Error(w, "destination is not empty; bulk migration blocked (resume a paused job to continue)", http.StatusConflict)
 				return
 			}
 		}
@@ -398,9 +400,54 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, job)
 		return
 	}
+	if len(parts) > 1 && parts[1] == "pause" && r.Method == http.MethodPost {
+		s.Runner.PauseJob()
+		writeJSON(w, map[string]string{"status": "pausing"})
+		return
+	}
 	if len(parts) > 1 && parts[1] == "cancel" && r.Method == http.MethodPost {
 		s.Runner.CancelJob()
 		writeJSON(w, map[string]string{"status": "cancelling"})
+		return
+	}
+	if r.Method == http.MethodPatch {
+		job, err := s.Store.GetJob(id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if job.Status != store.JobPaused && job.Status != store.JobFailed {
+			http.Error(w, "job settings can only be changed while paused or failed", http.StatusConflict)
+			return
+		}
+		var body struct {
+			BatchSize       int `json:"batch_size"`
+			ParallelTables  int `json:"parallel_tables"`
+			ChunkTimeoutSec int `json:"chunk_timeout_sec"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		st, _ := s.Store.GetSettings()
+		if body.BatchSize <= 0 {
+			body.BatchSize = job.BatchSize
+			if body.BatchSize <= 0 {
+				body.BatchSize = st.DefaultBatchSize
+			}
+		}
+		if body.ParallelTables <= 0 {
+			body.ParallelTables = job.ParallelTables
+			if body.ParallelTables <= 0 {
+				body.ParallelTables = st.DefaultParallel
+			}
+		}
+		if err := s.Store.UpdateJobSettings(id, body.BatchSize, body.ParallelTables, body.ChunkTimeoutSec); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		job, _ = s.Store.GetJob(id)
+		writeJSON(w, job)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -467,13 +514,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]any{
-			"schedule_cron":       st.ScheduleCron,
-			"schedule_source_id":  st.ScheduleSourceID,
-			"schedule_dest_id":    st.ScheduleDestID,
-			"default_batch_size":  st.DefaultBatchSize,
-			"default_parallel":    st.DefaultParallel,
-			"engine_enabled":      st.EngineEnabled,
-			"has_password":        st.AdminPasswordHash != "",
+			"schedule_cron":              st.ScheduleCron,
+			"schedule_source_id":         st.ScheduleSourceID,
+			"schedule_dest_id":           st.ScheduleDestID,
+			"default_batch_size":         st.DefaultBatchSize,
+			"default_parallel":           st.DefaultParallel,
+			"default_chunk_timeout_sec":  st.DefaultChunkTimeoutSec,
+			"default_row_count_fallback_cap": st.DefaultRowCountFallbackCap,
+			"engine_enabled":             st.EngineEnabled,
+			"has_password":               st.AdminPasswordHash != "",
 		})
 	case http.MethodPut:
 		var body store.AppSettings
@@ -486,6 +535,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.DefaultParallel <= 0 {
 			body.DefaultParallel = 2
+		}
+		if body.DefaultChunkTimeoutSec <= 0 {
+			body.DefaultChunkTimeoutSec = 300
 		}
 		if body.ScheduleCron == "" {
 			body.ScheduleCron = "0 */4 * * *"

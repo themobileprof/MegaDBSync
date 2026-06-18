@@ -12,8 +12,12 @@ import (
 )
 
 type ExploreTable struct {
-	Schema string `json:"schema"`
-	Name   string `json:"name"`
+	Schema           string `json:"schema"`
+	Name             string `json:"name"`
+	NumRows          int64  `json:"num_rows,omitempty"`
+	NumRowsKnown     bool   `json:"num_rows_known"`
+	NumRowsApprox    bool   `json:"num_rows_approx,omitempty"`
+	NumRowsExceeded  bool   `json:"num_rows_exceeded,omitempty"`
 }
 
 type ExploreColumn struct {
@@ -53,7 +57,11 @@ func ListTables(ctx context.Context, c store.Connection, password string) ([]Exp
 		}
 		out := make([]ExploreTable, len(meta))
 		for i, t := range meta {
-			out[i] = ExploreTable{Schema: t.Schema, Name: t.Name}
+			out[i] = ExploreTable{
+				Schema: t.Schema, Name: t.Name,
+				NumRows: t.RowCount, NumRowsKnown: t.RowCountKnown,
+				NumRowsApprox: t.RowCountApprox, NumRowsExceeded: t.RowCountExceeded,
+			}
 		}
 		return out, nil
 	case store.ConnMSSQL:
@@ -65,16 +73,17 @@ func ListTables(ctx context.Context, c store.Connection, password string) ([]Exp
 
 func listMSSQLTables(ctx context.Context, db *sql.DB, schema string) ([]ExploreTable, error) {
 	q := `
-SELECT s.name, t.name
+SELECT s.name, t.name, ISNULL(SUM(p.rows), 0)
 FROM sys.tables t
 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
 WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest')`
 	args := []any{}
 	if schema != "" {
 		q += ` AND s.name = @p1`
 		args = append(args, sql.Named("p1", schema))
 	}
-	q += ` ORDER BY s.name, t.name`
+	q += ` GROUP BY s.name, t.name ORDER BY SUM(p.rows), s.name, t.name`
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -83,9 +92,11 @@ WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest')`
 	var out []ExploreTable
 	for rows.Next() {
 		var t ExploreTable
-		if err := rows.Scan(&t.Schema, &t.Name); err != nil {
+		if err := rows.Scan(&t.Schema, &t.Name, &t.NumRows); err != nil {
 			return nil, err
 		}
+		t.NumRowsKnown = true
+		t.NumRowsApprox = true
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -100,7 +111,7 @@ func TableSchema(ctx context.Context, c store.Connection, password, schema, tabl
 
 	switch c.Type {
 	case store.ConnOracle:
-		meta, err := LoadOracleTableMeta(ctx, db, schema, table)
+		meta, err := LoadOracleTableMeta(ctx, db, schema, table, 0)
 		if err != nil {
 			return nil, err
 		}

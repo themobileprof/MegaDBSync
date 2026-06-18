@@ -13,13 +13,16 @@ import (
 )
 
 type TableMeta struct {
-	Schema      string
-	Name        string
-	Columns     []ColumnMeta
-	PrimaryKeys []string
-	RowCount    int64
-	WatermarkCol string
-	SyncMode    string
+	Schema           string
+	Name             string
+	Columns          []ColumnMeta
+	PrimaryKeys      []string
+	RowCount         int64
+	RowCountKnown    bool
+	RowCountApprox   bool
+	RowCountExceeded bool
+	WatermarkCol     string
+	SyncMode         string
 }
 
 type ColumnMeta struct {
@@ -136,7 +139,8 @@ WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest','db_accessadmin','db_bac
 
 func ListOracleTables(ctx context.Context, db *sql.DB, ownerFilter string) ([]TableMeta, error) {
 	q := `
-SELECT owner, table_name
+SELECT owner, table_name, NVL(num_rows, 0),
+  CASE WHEN last_analyzed IS NOT NULL THEN 1 ELSE 0 END
 FROM all_tables
 WHERE owner NOT IN ('SYS','SYSTEM','XDB','MDSYS','CTXSYS','ORDDATA','LBACSYS','OUTLN')
 `
@@ -145,7 +149,7 @@ WHERE owner NOT IN ('SYS','SYSTEM','XDB','MDSYS','CTXSYS','ORDDATA','LBACSYS','O
 		q += ` AND owner = :1`
 		args = append(args, ownerFilter)
 	}
-	q += ` ORDER BY owner, table_name`
+	q += ` ORDER BY NVL(num_rows, 0), owner, table_name`
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -154,15 +158,18 @@ WHERE owner NOT IN ('SYS','SYSTEM','XDB','MDSYS','CTXSYS','ORDDATA','LBACSYS','O
 	var tables []TableMeta
 	for rows.Next() {
 		var t TableMeta
-		if err := rows.Scan(&t.Schema, &t.Name); err != nil {
+		var analyzed int
+		if err := rows.Scan(&t.Schema, &t.Name, &t.RowCount, &analyzed); err != nil {
 			return nil, err
 		}
+		t.RowCountKnown = analyzed == 1
+		t.RowCountApprox = t.RowCountKnown
 		tables = append(tables, t)
 	}
 	return tables, rows.Err()
 }
 
-func LoadOracleTableMeta(ctx context.Context, db *sql.DB, schema, table string) (TableMeta, error) {
+func LoadOracleTableMeta(ctx context.Context, db *sql.DB, schema, table string, rowCountFallbackCap int64) (TableMeta, error) {
 	meta := TableMeta{Schema: schema, Name: table}
 	cols, err := oracleColumns(ctx, db, schema, table)
 	if err != nil {
@@ -171,10 +178,12 @@ func LoadOracleTableMeta(ctx context.Context, db *sql.DB, schema, table string) 
 	meta.Columns = cols
 	meta.PrimaryKeys, _ = oraclePrimaryKeys(ctx, db, schema, table)
 	meta.WatermarkCol, meta.SyncMode = detectSyncMode(cols, meta.PrimaryKeys)
-	if err := db.QueryRowContext(ctx,
-		`SELECT NVL(num_rows, 0) FROM all_tables WHERE owner = :1 AND table_name = :2`,
-		strings.ToUpper(schema), strings.ToUpper(table)).Scan(&meta.RowCount); err != nil {
+	if err := fillOracleRowCount(ctx, db, schema, table, &meta, rowCountFallbackCap); err != nil {
 		meta.RowCount = 0
+		meta.RowCountKnown = false
+	}
+	if meta.RowCountKnown && !meta.RowCountExceeded {
+		meta.RowCountApprox = true
 	}
 	return meta, nil
 }

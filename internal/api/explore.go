@@ -178,7 +178,7 @@ func (s *Server) handleEngine(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.LogEvent("", "info", "Migration engine started from web console")
 		writeJSON(w, map[string]any{"engine_enabled": true})
 	case path == "stop" && r.Method == http.MethodPost:
-		s.Runner.CancelJob()
+		s.Runner.PauseJob()
 		if err := s.Store.SetEngineEnabled(false); err != nil {
 			writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
 			return

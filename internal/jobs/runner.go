@@ -14,6 +14,8 @@ type Runner struct {
 	Engine   *migrate.Engine
 	mu       sync.Mutex
 	cancel   context.CancelFunc
+	pauseReq bool
+	cancelReq bool
 	notify   chan struct{}
 }
 
@@ -55,20 +57,43 @@ func (r *Runner) StartJob(jobID string) error {
 	if err != nil {
 		return err
 	}
-	if job.Status != store.JobPending && job.Status != store.JobPaused {
+	if job.Status != store.JobPending && job.Status != store.JobPaused && job.Status != store.JobFailed {
 		return errInvalidStatus
+	}
+	if job.Status == store.JobPaused || job.Status == store.JobFailed {
+		if err := r.Store.PrepareJobResume(jobID); err != nil {
+			return err
+		}
+		job, err = r.Store.GetJob(jobID)
+		if err != nil {
+			return err
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
+	r.pauseReq = false
+	r.cancelReq = false
 	go r.run(ctx, job)
 	return nil
 }
 
+func (r *Runner) PauseJob() {
+	r.mu.Lock()
+	r.pauseReq = true
+	cancel := r.cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (r *Runner) CancelJob() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.cancel != nil {
-		r.cancel()
+	r.cancelReq = true
+	cancel := r.cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -76,6 +101,8 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 	defer func() {
 		r.mu.Lock()
 		r.cancel = nil
+		r.pauseReq = false
+		r.cancelReq = false
 		r.mu.Unlock()
 		select {
 		case r.notify <- struct{}{}:
@@ -115,17 +142,40 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 	}
 
 	if runErr != nil {
-		if ctx.Err() != nil {
+		r.mu.Lock()
+		pauseReq := r.pauseReq
+		cancelReq := r.cancelReq
+		r.mu.Unlock()
+
+		job, _ = r.Store.GetJob(job.ID)
+		now := time.Now().UTC()
+
+		switch {
+		case pauseReq || (ctx.Err() != nil && !cancelReq):
+			job.Status = store.JobPaused
+			job.ErrorMessage = ""
+			job.CompletedAt = nil
+			_ = r.Store.UpdateJob(job)
+			_ = r.Store.LogEvent(job.ID, "info", "Migration paused — adjust settings and resume")
+		case migrate.IsChunkTimeout(runErr):
+			job.Status = store.JobPaused
+			job.ErrorMessage = runErr.Error()
+			job.CompletedAt = nil
+			_ = r.Store.UpdateJob(job)
+			_ = r.Store.LogEvent(job.ID, "error", runErr.Error())
+		case cancelReq || ctx.Err() != nil:
 			job.Status = store.JobCancelled
 			job.ErrorMessage = "cancelled"
-		} else {
+			job.CompletedAt = &now
+			_ = r.Store.UpdateJob(job)
+			_ = r.Store.LogEvent(job.ID, "info", "Migration cancelled")
+		default:
 			job.Status = store.JobFailed
 			job.ErrorMessage = runErr.Error()
+			job.CompletedAt = &now
+			_ = r.Store.UpdateJob(job)
+			_ = r.Store.LogEvent(job.ID, "error", runErr.Error())
 		}
-		now := time.Now().UTC()
-		job.CompletedAt = &now
-		_ = r.Store.UpdateJob(job)
-		_ = r.Store.LogEvent(job.ID, "error", runErr.Error())
 	}
 }
 

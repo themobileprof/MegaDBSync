@@ -48,9 +48,10 @@ type Job struct {
 	SourceID        string    `json:"source_id"`
 	DestID          string    `json:"dest_id"`
 	Status          JobStatus `json:"status"`
-	BatchSize       int       `json:"batch_size"`
-	ParallelTables  int       `json:"parallel_tables"`
-	TableFilter     string    `json:"table_filter"`
+	BatchSize        int       `json:"batch_size"`
+	ParallelTables   int       `json:"parallel_tables"`
+	ChunkTimeoutSec  int       `json:"chunk_timeout_sec"`
+	TableFilter      string    `json:"table_filter"`
 	ErrorMessage    string    `json:"error_message,omitempty"`
 	RowsTotal       int64     `json:"rows_total"`
 	RowsDone        int64     `json:"rows_done"`
@@ -74,8 +75,13 @@ type TableTask struct {
 	WatermarkCol  string    `json:"watermark_col,omitempty"`
 	LastWatermark string    `json:"last_watermark,omitempty"`
 	LastMaxKey    string    `json:"last_max_key,omitempty"`
-	LastSCN       int64     `json:"last_scn,omitempty"`
-	RowsTotal     int64     `json:"rows_total"`
+	LastSCN         int64     `json:"last_scn,omitempty"`
+	LastRowID       string    `json:"last_row_id,omitempty"`
+	SourceRowCount         int64     `json:"source_row_count,omitempty"`
+	SourceRowCountKnown    bool      `json:"source_row_count_known"`
+	SourceRowCountApprox   bool      `json:"source_row_count_approx,omitempty"`
+	SourceRowCountExceeded bool      `json:"source_row_count_exceeded,omitempty"`
+	RowsTotal              int64     `json:"rows_total"`
 	RowsDone      int64     `json:"rows_done"`
 	RowsPerSec    float64   `json:"rows_per_sec"`
 	ErrorMessage  string    `json:"error_message,omitempty"`
@@ -89,9 +95,11 @@ type AppSettings struct {
 	ScheduleCron      string `json:"schedule_cron"`
 	ScheduleSourceID  string `json:"schedule_source_id"`
 	ScheduleDestID    string `json:"schedule_dest_id"`
-	DefaultBatchSize  int    `json:"default_batch_size"`
-	DefaultParallel   int    `json:"default_parallel"`
-	EngineEnabled     bool   `json:"engine_enabled"`
+	DefaultBatchSize       int `json:"default_batch_size"`
+	DefaultParallel        int `json:"default_parallel"`
+	DefaultChunkTimeoutSec   int `json:"default_chunk_timeout_sec"`
+	DefaultRowCountFallbackCap int64 `json:"default_row_count_fallback_cap"`
+	EngineEnabled            bool `json:"engine_enabled"`
 }
 
 type ActivityEvent struct {

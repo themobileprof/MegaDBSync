@@ -77,9 +77,23 @@
               <div id="job-progress" class="progress-fill"></div>
             </div>
             <div class="stat-row">
-              <span><strong id="job-rows">0</strong> rows</span>
+              <span><strong id="job-rows">0</strong> rows copied</span>
+              <span id="job-num-rows-total" class="muted"></span>
               <span><strong id="job-tables">0/0</strong> tables</span>
             </div>
+          </div>
+          <div id="paused-job-controls" class="hidden form-grid" style="margin-top:1rem">
+            <p class="muted">Migration is paused. Adjust settings and resume — progress is saved per table.</p>
+            <label>Batch size<input id="paused-batch-size" type="number" min="1000" step="1000"></label>
+            <label>Parallel tables<input id="paused-parallel" type="number" min="1" max="8"></label>
+            <label>Chunk timeout (sec)<input id="paused-chunk-timeout" type="number" min="30" step="30" title="Max seconds per batch before timeout"></label>
+            <div class="form-actions">
+              <button class="btn primary" type="button" id="resume-job-btn">Save &amp; resume</button>
+            </div>
+          </div>
+          <div id="running-job-controls" class="form-actions" style="margin-top:1rem">
+            <button class="btn" type="button" id="pause-job-btn">Pause migration</button>
+            <button class="btn danger" type="button" id="cancel-job-btn">Cancel job</button>
           </div>
         </div>
 
@@ -149,13 +163,13 @@
             </label>
             <label>Batch size<input name="batch_size" type="number" min="1000" step="1000" placeholder="50000"></label>
             <label>Parallel tables<input name="parallel_tables" type="number" min="1" max="8" placeholder="2"></label>
+            <label>Chunk timeout (sec)<input name="chunk_timeout_sec" type="number" min="30" step="30" placeholder="300" title="Max seconds per batch; triggers pause on timeout"></label>
             <label>Table filter (optional)<input name="table_filter" placeholder="SCHEMA.TABLE or TABLE, comma-separated"></label>
             <div class="form-actions">
               <button class="btn primary" type="submit">Create &amp; start</button>
-              <button class="btn danger" type="button" id="cancel-job-btn">Cancel active job</button>
             </div>
           </form>
-          <p class="muted note">Bulk jobs refuse to run unless the destination has zero user tables. The migration engine must be running (Dashboard → Start engine).</p>
+          <p class="muted note">Tables migrate smallest-first so heavy tables run last. Bulk jobs refuse a non-empty destination on first start — resume a paused job to continue. Pause anytime to change batch size or parallelism.</p>
         </div>
         <div class="card">
           <h3>Recent jobs</h3>
@@ -241,6 +255,8 @@
             </label>
             <label>Default batch size<input name="default_batch_size" type="number" min="1000" step="1000"></label>
             <label>Default parallel tables<input name="default_parallel" type="number" min="1" max="8"></label>
+            <label>Default chunk timeout (sec)<input name="default_chunk_timeout_sec" type="number" min="30" step="30" title="Max seconds per batch before pause"></label>
+            <label>Row-count fallback cap<input name="default_row_count_fallback_cap" type="number" min="0" step="100000" placeholder="0 = off" title="When Oracle NUM_ROWS stats are missing, count up to this many rows (0 = disabled)"></label>
             <button class="btn primary" type="submit">Save settings</button>
           </form>
         </div>

@@ -91,18 +91,3 @@ GRANT SELECT ON schema.table TO sync_user;
 |----------|---------|--------|
 | **Build** | Push/PR to `main` | Artifact `megadbsync-windows-amd64` (30 days) |
 | **Release** | Tag `v*` | **`megadbsync.exe` on GitHub Releases** (permanent) |
-
-## Project layout
-
-```
-cmd/megadbsync/         Main entry point (windows build tag)
-docs/                   Deployment documentation
-internal/platform/      Windows paths (%ProgramData%)
-internal/api/           HTTP API + SSE
-internal/auth/          Session auth
-internal/dbconn/        Oracle/MSSQL drivers, bulk insert, schema mapping
-internal/jobs/          Job runner + scheduler
-internal/migrate/       Bulk & incremental engines
-internal/store/         SQLite persistence + DPAPI crypto
-web/static/             Embedded UI
-```

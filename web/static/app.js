@@ -5,6 +5,7 @@ let authed = false;
 let eventSource = null;
 let exploreSelected = null;
 let exploreConnections = [];
+let activeJobId = null;
 
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
@@ -97,6 +98,17 @@ function fmtNum(n) {
   return (n || 0).toLocaleString();
 }
 
+function fmtNumRows(row) {
+  const n = row.num_rows ?? row.source_row_count;
+  const known = row.num_rows_known ?? row.source_row_count_known;
+  const approx = row.num_rows_approx ?? row.source_row_count_approx;
+  const exceeded = row.num_rows_exceeded ?? row.source_row_count_exceeded;
+  if (!known) return 'NUM_ROWS unknown';
+  const label = exceeded ? `${fmtNum(n)}+` : fmtNum(n);
+  if (approx) return `NUM_ROWS ${label} (stats)`;
+  return `NUM_ROWS ${label}`;
+}
+
 function fmtTime(ts) {
   if (!ts) return '';
   return new Date(ts).toLocaleString();
@@ -119,6 +131,7 @@ function renderDashboard(data) {
 
   const job = data.active_job;
   const card = $('#active-job-card');
+  activeJobId = job ? job.id : null;
   if (!job) {
     if (!engineOn) {
       $('#status-headline').textContent = 'Engine stopped';
@@ -133,14 +146,30 @@ function renderDashboard(data) {
     card.classList.add('hidden');
   } else {
     card.classList.remove('hidden');
+    const paused = job.status === 'paused' || job.status === 'failed';
     $('#status-headline').textContent = job.status === 'running' ? 'Migration in progress' : titleCase(job.status);
-    $('#status-detail').textContent = `${job.type.replace('_', ' ')} · started ${fmtTime(job.started_at)}`;
+    $('#status-detail').textContent = paused && job.error_message
+      ? job.error_message
+      : `${job.type.replace('_', ' ')} · started ${fmtTime(job.started_at)}`;
     $('#job-phase').textContent = job.current_phase || job.status;
     $('#job-table').textContent = job.current_table || '';
     $('#job-rows').textContent = fmtNum(job.rows_done);
+    const est = $('#job-num-rows-total');
+    if (job.rows_total > 0) {
+      est.textContent = `· Σ NUM_ROWS ${fmtNum(job.rows_total)} (stats)`;
+    } else {
+      est.textContent = '';
+    }
     $('#job-tables').textContent = `${job.tables_done}/${job.tables_total}`;
     const pct = job.tables_total ? Math.round((job.tables_done / job.tables_total) * 100) : 0;
     $('#job-progress').style.width = pct + '%';
+    $('#paused-job-controls').classList.toggle('hidden', !paused);
+    $('#running-job-controls').classList.toggle('hidden', paused || job.status !== 'running');
+    if (paused) {
+      $('#paused-batch-size').value = job.batch_size || 50000;
+      $('#paused-parallel').value = job.parallel_tables || 2;
+      $('#paused-chunk-timeout').value = job.chunk_timeout_sec || '';
+    }
   }
 
   const tasks = data.table_tasks || [];
@@ -150,18 +179,26 @@ function renderDashboard(data) {
     taskEl.textContent = 'No table tasks yet.';
   } else {
     taskEl.className = 'task-list';
-    taskEl.innerHTML = tasks.map(t => `
+    taskEl.innerHTML = tasks.map(t => {
+      const err = t.error_message ? `<div class="error">${esc(t.error_message)}</div>` : '';
+      const progress = t.source_row_count_known
+        ? `${fmtNum(t.rows_done)} / ${t.source_row_count_exceeded ? fmtNum(t.source_row_count) + '+' : fmtNum(t.source_row_count)} copied`
+        : `${fmtNum(t.rows_done)} copied`;
+      return `
       <div class="task-item ${t.status}">
         <div class="task-meta">
           <strong>${esc(t.schema_name)}.${esc(t.table_name)}</strong>
           <span class="badge ${t.status}">${t.status}</span>
         </div>
         <div class="task-meta muted">
-          <span>${fmtNum(t.rows_done)} rows · ${t.sync_mode || '—'}</span>
+          <span>${fmtNumRows(t)}</span>
+          <span>${progress}</span>
           <span>${t.rows_per_sec ? t.rows_per_sec.toFixed(0) + '/s' : ''}</span>
         </div>
         ${t.status === 'running' ? '<div class="mini-bar"><span></span></div>' : ''}
-      </div>`).join('');
+        ${err}
+      </div>`;
+    }).join('');
   }
 
   const events = (data.events || []).slice().reverse();
@@ -224,10 +261,14 @@ function renderJobs(list) {
       <div class="task-meta">
         <strong>${esc(j.type.replace('_', ' '))}</strong>
         <span class="badge ${j.status}">${j.status}</span>
+        ${j.status === 'paused' || j.status === 'failed' ? `<button class="btn primary" type="button" data-resume="${j.id}" style="margin-left:auto">Resume</button>` : ''}
       </div>
       <div class="muted">${fmtNum(j.rows_done)} rows · ${j.tables_done}/${j.tables_total} tables · ${fmtTime(j.created_at)}</div>
       ${j.error_message ? `<div class="error">${esc(j.error_message)}</div>` : ''}
     </div>`).join('');
+  el.querySelectorAll('[data-resume]').forEach(btn => {
+    btn.addEventListener('click', () => resumeJob(btn.dataset.resume));
+  });
 }
 
 function fillJobSelects(list) {
@@ -326,6 +367,7 @@ $('#job-form').addEventListener('submit', async (e) => {
   const body = Object.fromEntries(fd.entries());
   body.batch_size = parseInt(body.batch_size || '0', 10);
   body.parallel_tables = parseInt(body.parallel_tables || '0', 10);
+  body.chunk_timeout_sec = parseInt(body.chunk_timeout_sec || '0', 10);
   body.start = true;
   try {
     await api('/jobs', { method: 'POST', body: JSON.stringify(body) });
@@ -334,13 +376,57 @@ $('#job-form').addEventListener('submit', async (e) => {
   }
 });
 
+async function activeJobPath(action) {
+  if (activeJobId) {
+    await api('/jobs/' + activeJobId + '/' + action, { method: 'POST' });
+    return;
+  }
+  const jobs = await api('/jobs');
+  const active = jobs.find(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused');
+  if (active) await api('/jobs/' + active.id + '/' + action, { method: 'POST' });
+}
+
+$('#pause-job-btn').addEventListener('click', async () => {
+  if (!confirm('Pause migration? Progress is saved and you can adjust settings before resuming.')) return;
+  try {
+    await activeJobPath('pause');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
 $('#cancel-job-btn').addEventListener('click', async () => {
-  if (!confirm('Cancel the active job?')) return;
-  await api('/jobs/active/cancel', { method: 'POST' }).catch(async () => {
-    const jobs = await api('/jobs');
-    const active = jobs.find(j => j.status === 'running' || j.status === 'pending');
-    if (active) await api('/jobs/' + active.id + '/cancel', { method: 'POST' });
-  });
+  if (!confirm('Cancel this job permanently? You cannot resume a cancelled job.')) return;
+  try {
+    await activeJobPath('cancel');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+async function resumeJob(jobId) {
+  try {
+    await api('/jobs/' + jobId + '/start', { method: 'POST' });
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+$('#resume-job-btn').addEventListener('click', async () => {
+  if (!activeJobId) return;
+  try {
+    await api('/jobs/' + activeJobId, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        batch_size: parseInt($('#paused-batch-size').value, 10),
+        parallel_tables: parseInt($('#paused-parallel').value, 10),
+        chunk_timeout_sec: parseInt($('#paused-chunk-timeout').value || '0', 10),
+      }),
+    });
+    await api('/jobs/' + activeJobId + '/start', { method: 'POST' });
+  } catch (err) {
+    alert(err.message);
+  }
 });
 
 async function loadSettingsForm() {
@@ -349,6 +435,12 @@ async function loadSettingsForm() {
   form.schedule_cron.value = s.schedule_cron || '0 */4 * * *';
   form.default_batch_size.value = s.default_batch_size || 50000;
   form.default_parallel.value = s.default_parallel || 2;
+  if (form.default_chunk_timeout_sec) {
+    form.default_chunk_timeout_sec.value = s.default_chunk_timeout_sec || 300;
+  }
+  if (form.default_row_count_fallback_cap) {
+    form.default_row_count_fallback_cap.value = s.default_row_count_fallback_cap || 0;
+  }
   if (s.schedule_source_id) form.schedule_source_id.value = s.schedule_source_id;
   if (s.schedule_dest_id) form.schedule_dest_id.value = s.schedule_dest_id;
 }
@@ -359,6 +451,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const body = Object.fromEntries(fd.entries());
   body.default_batch_size = parseInt(body.default_batch_size, 10);
   body.default_parallel = parseInt(body.default_parallel, 10);
+  body.default_chunk_timeout_sec = parseInt(body.default_chunk_timeout_sec, 10);
+  body.default_row_count_fallback_cap = parseInt(body.default_row_count_fallback_cap || '0', 10);
   await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
 });
 
@@ -387,7 +481,7 @@ $('#engine-start-btn').addEventListener('click', async () => {
 });
 
 $('#engine-stop-btn').addEventListener('click', async () => {
-  if (!confirm('Stop the migration engine? Running jobs will be cancelled.')) return;
+  if (!confirm('Stop the migration engine? Running jobs will be paused.')) return;
   try {
     await api('/engine/stop', { method: 'POST', body: '{}' });
   } catch (err) {
@@ -479,7 +573,11 @@ function renderExploreTables(tables) {
   el.className = 'explore-table-list';
   el.innerHTML = tables.map(t => {
     const key = `${t.schema}.${t.name}`;
-    return `<button type="button" class="explore-table-item" data-schema="${esc(t.schema)}" data-name="${esc(t.name)}">${esc(key)}</button>`;
+    const rows = fmtNumRows(t);
+    return `<button type="button" class="explore-table-item" data-schema="${esc(t.schema)}" data-name="${esc(t.name)}">
+      <span class="explore-table-name">${esc(key)}</span>
+      <span class="explore-table-rows muted">${esc(rows)}</span>
+    </button>`;
   }).join('');
   el.querySelectorAll('.explore-table-item').forEach(btn => {
     btn.addEventListener('click', () => {

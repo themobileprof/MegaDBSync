@@ -218,6 +218,8 @@ body {
 .badge.completed { background: rgba(91,227,138,0.15); color: #b6ffd0; }
 .badge.failed { background: rgba(255,107,122,0.15); color: #ffb3bb; }
 .badge.pending { background: rgba(147,160,192,0.15); color: var(--muted); }
+.badge.paused { background: rgba(255,193,79,0.15); color: #ffe0a3; }
+.badge.cancelled { background: rgba(147,160,192,0.12); color: var(--muted); }
 
 .event-item.info { border-left: 3px solid var(--accent); }
 .event-item.error { border-left: 3px solid var(--danger); }
@@ -246,7 +248,10 @@ body {
 .explore-table-item {
   padding: 0.55rem 0.65rem; border-radius: 10px; border: 1px solid var(--border);
   background: var(--bg-elevated); cursor: pointer;
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; text-align: left;
 }
+.explore-table-name { font-weight: 600; }
+.explore-table-rows { font-size: 0.8rem; white-space: nowrap; }
 .explore-table-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(79,140,255,0.35); }
 .explore-table-item:hover { border-color: rgba(79,140,255,0.55); }
 

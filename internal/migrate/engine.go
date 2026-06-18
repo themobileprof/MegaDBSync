@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,10 @@ type syncState struct {
 }
 
 func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Connection, srcPass, dstPass string) error {
+	settings, _ := e.Store.GetSettings()
+	timeout := chunkTimeout(job, settings)
+	rowCountCap := settings.DefaultRowCountFallbackCap
+
 	ora, err := dbconn.OpenOracle(ctx, src, srcPass)
 	if err != nil {
 		return fmt.Errorf("oracle connect: %w", err)
@@ -39,12 +44,18 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 	defer mssqlDB.Close()
 	dbconn.ConfigurePool(mssqlDB, job.ParallelTables)
 
-	count, err := dbconn.DestinationMustBeEmpty(ctx, mssqlDB, dst.Schema)
-	if err != nil {
-		return fmt.Errorf("destination check: %w", err)
-	}
-	if count > 0 {
-		return fmt.Errorf("destination database is not empty (%d tables found); bulk migration refused to protect existing data", count)
+	existingTasks, _ := e.Store.ListTableTasks(job.ID)
+	taskByKey := taskMap(existingTasks)
+	resuming := job.StartedAt != nil && len(existingTasks) > 0
+
+	if !resuming {
+		count, err := dbconn.DestinationMustBeEmpty(ctx, mssqlDB, dst.Schema)
+		if err != nil {
+			return fmt.Errorf("destination check: %w", err)
+		}
+		if count > 0 {
+			return fmt.Errorf("destination database is not empty (%d tables found); bulk migration refused to protect existing data", count)
+		}
 	}
 
 	owner := strings.ToUpper(src.Schema)
@@ -57,27 +68,35 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 	}
 
 	job.TablesTotal = len(tables)
+	if job.StartedAt == nil {
+		now := time.Now().UTC()
+		job.StartedAt = &now
+	}
 	job.Status = store.JobRunning
-	now := time.Now().UTC()
-	job.StartedAt = &now
 	job.CurrentPhase = "schema"
 	_ = e.Store.UpdateJob(job)
-	_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting bulk migration: %d tables", len(tables)))
+	if resuming {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Resuming bulk migration: %d tables", len(tables)))
+	} else {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting bulk migration: %d tables (smallest first)", len(tables)))
+	}
 
 	metas := make([]dbconn.TableMeta, 0, len(tables))
+	var rowsTotal int64
 	for _, t := range tables {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		meta, err := dbconn.LoadOracleTableMeta(ctx, ora, t.Schema, t.Name)
+		meta, err := dbconn.LoadOracleTableMeta(ctx, ora, t.Schema, t.Name, rowCountCap)
 		if err != nil {
 			return err
 		}
 		if dst.Schema != "" && !strings.EqualFold(meta.Schema, dst.Schema) {
 			meta.Schema = dst.Schema
 		}
+		rowsTotal += contributeRowTotal(meta)
 		job.CurrentTable = meta.Schema + "." + meta.Name
 		_ = e.Store.UpdateJob(job)
 		if err := dbconn.CreateMSSQLTable(ctx, mssqlDB, meta); err != nil {
@@ -85,49 +104,89 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 		}
 		metas = append(metas, meta)
 	}
+	sortTablesBySize(metas)
+	job.RowsTotal = rowsTotal
+
+	tablesDone, rowsDone := summarizeCompletedTasks(existingTasks)
+	job.TablesDone = tablesDone
+	job.RowsDone = rowsDone
 
 	job.CurrentPhase = "data"
 	_ = e.Store.UpdateJob(job)
 
+	pending := make([]dbconn.TableMeta, 0, len(metas))
+	for _, meta := range metas {
+		key := tableTaskKey(meta.Schema, meta.Name)
+		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
+			continue
+		}
+		pending = append(pending, meta)
+	}
+
 	parallel := max(1, job.ParallelTables)
 	sem := make(chan struct{}, parallel)
-	errCh := make(chan error, len(metas))
-	done := make(chan struct{}, len(metas))
-	var rowsDone atomic.Int64
+	errCh := make(chan error, len(pending))
+	done := make(chan struct{}, len(pending))
+	var rowsDoneAtomic atomic.Int64
+	rowsDoneAtomic.Store(rowsDone)
+	var tablesDoneAtomic atomic.Int32
+	tablesDoneAtomic.Store(int32(tablesDone))
 
-	for _, meta := range metas {
+	for _, meta := range pending {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case sem <- struct{}{}:
 		}
 		tableMeta := meta
+		existing := taskByKey[tableTaskKey(tableMeta.Schema, tableMeta.Name)]
 		go func() {
 			defer func() { <-sem; done <- struct{}{} }()
 			task := store.TableTask{
 				JobID: job.ID, SchemaName: tableMeta.Schema, TableName: tableMeta.Name,
 				Status: store.JobRunning, SyncMode: tableMeta.SyncMode, WatermarkCol: tableMeta.WatermarkCol,
+				LastRowID: existing.LastRowID, RowsDone: existing.RowsDone,
 			}
-			start := time.Now().UTC()
-			task.StartedAt = &start
+			applyMetaRowCount(&task, tableMeta)
+			if existing.ID != "" {
+				task.ID = existing.ID
+			}
+			if existing.StartedAt != nil {
+				task.StartedAt = existing.StartedAt
+			} else {
+				start := time.Now().UTC()
+				task.StartedAt = &start
+			}
+			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			n, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize)
+			tableRows, err := e.copyTable(ctx, ora, mssqlDB, tableMeta, job.BatchSize, existing.LastRowID, timeout, &task)
 			if err != nil {
+				if ctx.Err() != nil {
+					task.Status = store.JobPaused
+					task.RowsDone = tableRows
+					_ = e.Store.UpsertTableTask(task)
+					return
+				}
 				task.Status = store.JobFailed
 				task.ErrorMessage = err.Error()
+				task.RowsDone = tableRows
 				_ = e.Store.UpsertTableTask(task)
 				errCh <- fmt.Errorf("%s.%s: %w", tableMeta.Schema, tableMeta.Name, err)
 				return
 			}
-			rowsDone.Add(n)
+			rowsDoneAtomic.Add(tableRows - existing.RowsDone)
 			end := time.Now().UTC()
 			task.CompletedAt = &end
 			task.Status = store.JobCompleted
-			task.RowsDone = n
-			task.RowsTotal = n
-			if end.Sub(start).Seconds() > 0 {
-				task.RowsPerSec = float64(n) / end.Sub(start).Seconds()
+			task.RowsDone = tableRows
+			task.RowsTotal = tableMeta.RowCount
+			if task.RowsTotal < task.RowsDone {
+				task.RowsTotal = task.RowsDone
+			}
+			elapsed := end.Sub(*task.StartedAt).Seconds()
+			if elapsed > 0 {
+				task.RowsPerSec = float64(task.RowsDone) / elapsed
 			}
 			_ = e.Store.UpsertTableTask(task)
 
@@ -141,13 +200,14 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 		}()
 	}
 
-	for i := 0; i < len(metas); i++ {
+	for i := 0; i < len(pending); i++ {
 		select {
 		case err := <-errCh:
 			return err
 		case <-done:
-			job.TablesDone++
-			job.RowsDone = rowsDone.Load()
+			tablesDoneAtomic.Add(1)
+			job.TablesDone = int(tablesDoneAtomic.Load())
+			job.RowsDone = rowsDoneAtomic.Load()
 			_ = e.Store.UpdateJob(job)
 			if e.OnProgress != nil {
 				e.OnProgress()
@@ -167,6 +227,10 @@ func (e *Engine) RunBulk(ctx context.Context, job store.Job, src, dst store.Conn
 }
 
 func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst store.Connection, srcPass, dstPass string) error {
+	settings, _ := e.Store.GetSettings()
+	timeout := chunkTimeout(job, settings)
+	rowCountCap := settings.DefaultRowCountFallbackCap
+
 	ora, err := dbconn.OpenOracle(ctx, src, srcPass)
 	if err != nil {
 		return err
@@ -190,44 +254,74 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		tableList = filterTables(tableList, job.TableFilter)
 	}
 
+	existingTasks, _ := e.Store.ListTableTasks(job.ID)
+	taskByKey := taskMap(existingTasks)
+	resuming := job.StartedAt != nil && len(existingTasks) > 0
+
 	job.TablesTotal = len(tableList)
+	if job.StartedAt == nil {
+		now := time.Now().UTC()
+		job.StartedAt = &now
+	}
 	job.Status = store.JobRunning
-	now := time.Now().UTC()
-	job.StartedAt = &now
 	job.CurrentPhase = "incremental"
 	_ = e.Store.UpdateJob(job)
-	_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting incremental sync: %d tables", len(tableList)))
+	if resuming {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Resuming incremental sync: %d tables", len(tableList)))
+	} else {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting incremental sync: %d tables (smallest first)", len(tableList)))
+	}
 
 	type tableWork struct {
 		meta  dbconn.TableMeta
 		state syncState
 	}
 	works := make([]tableWork, 0, len(tableList))
+	var rowsTotal int64
 	for _, t := range tableList {
-		meta, err := dbconn.LoadOracleTableMeta(ctx, ora, t.Schema, t.Name)
+		meta, err := dbconn.LoadOracleTableMeta(ctx, ora, t.Schema, t.Name, rowCountCap)
 		if err != nil {
 			return err
 		}
 		if dst.Schema != "" {
 			meta.Schema = dst.Schema
 		}
+		rowsTotal += contributeRowTotal(meta)
 		mode, wmCol, wm, maxKey, scn, _ := e.Store.GetSyncState(job.SourceID, job.DestID, meta.Schema, meta.Name)
 		if mode != "" {
 			meta.SyncMode = mode
 			meta.WatermarkCol = wmCol
+		}
+		key := tableTaskKey(meta.Schema, meta.Name)
+		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
+			continue
 		}
 		works = append(works, tableWork{
 			meta:  meta,
 			state: syncState{watermark: wm, maxKey: maxKey, scn: scn},
 		})
 	}
+	sort.Slice(works, func(i, j int) bool {
+		if works[i].meta.RowCount != works[j].meta.RowCount {
+			return works[i].meta.RowCount < works[j].meta.RowCount
+		}
+		return works[i].meta.Name < works[j].meta.Name
+	})
+
+	tablesDone, rowsDone := summarizeCompletedTasks(existingTasks)
+	job.RowsTotal = rowsTotal
+	job.TablesDone = tablesDone
+	job.RowsDone = rowsDone
+	_ = e.Store.UpdateJob(job)
 
 	parallel := max(1, job.ParallelTables)
 	sem := make(chan struct{}, parallel)
 	errCh := make(chan error, len(works))
 	done := make(chan int64, len(works))
-	var tablesDone atomic.Int32
-	var rowsDone atomic.Int64
+	var tablesDoneAtomic atomic.Int32
+	tablesDoneAtomic.Store(int32(tablesDone))
+	var rowsDoneAtomic atomic.Int64
+	rowsDoneAtomic.Store(rowsDone)
 
 	for _, work := range works {
 		select {
@@ -236,6 +330,7 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		case sem <- struct{}{}:
 		}
 		w := work
+		existing := taskByKey[tableTaskKey(w.meta.Schema, w.meta.Name)]
 		go func() {
 			defer func() { <-sem }()
 			meta := w.meta
@@ -243,13 +338,32 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 				JobID: job.ID, SchemaName: meta.Schema, TableName: meta.Name,
 				Status: store.JobRunning, SyncMode: meta.SyncMode, WatermarkCol: meta.WatermarkCol,
 				LastWatermark: w.state.watermark, LastMaxKey: w.state.maxKey, LastSCN: w.state.scn,
+				RowsDone: existing.RowsDone,
 			}
-			start := time.Now().UTC()
-			task.StartedAt = &start
+			applyMetaRowCount(&task, meta)
+			if existing.ID != "" {
+				task.ID = existing.ID
+			}
+			if existing.StartedAt != nil {
+				task.StartedAt = existing.StartedAt
+			} else {
+				start := time.Now().UTC()
+				task.StartedAt = &start
+			}
+			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			n, newState, err := e.syncTableIncremental(ctx, job.SourceID, job.DestID, ora, mssqlDB, meta, job.BatchSize, w.state, &task)
+			n, newState, err := e.syncTableIncremental(ctx, job.SourceID, job.DestID, ora, mssqlDB, meta, job.BatchSize, w.state, timeout, &task)
 			if err != nil {
+				if ctx.Err() != nil {
+					task.Status = store.JobPaused
+					task.RowsDone = existing.RowsDone + n
+					task.LastWatermark = newState.watermark
+					task.LastMaxKey = newState.maxKey
+					task.LastSCN = newState.scn
+					_ = e.Store.UpsertTableTask(task)
+					return
+				}
 				task.Status = store.JobFailed
 				task.ErrorMessage = err.Error()
 				_ = e.Store.UpsertTableTask(task)
@@ -260,10 +374,13 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 			end := time.Now().UTC()
 			task.CompletedAt = &end
 			task.Status = store.JobCompleted
-			task.RowsDone = n
-			task.RowsTotal = n
-			if end.Sub(start).Seconds() > 0 {
-				task.RowsPerSec = float64(n) / end.Sub(start).Seconds()
+			task.RowsDone = existing.RowsDone + n
+			task.RowsTotal = meta.RowCount
+			if task.RowsTotal < task.RowsDone {
+				task.RowsTotal = task.RowsDone
+			}
+			if task.StartedAt != nil && end.Sub(*task.StartedAt).Seconds() > 0 {
+				task.RowsPerSec = float64(task.RowsDone) / end.Sub(*task.StartedAt).Seconds()
 			}
 			task.LastWatermark = newState.watermark
 			task.LastMaxKey = newState.maxKey
@@ -280,10 +397,10 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		case err := <-errCh:
 			return err
 		case n := <-done:
-			tablesDone.Add(1)
-			rowsDone.Add(n)
-			job.TablesDone = int(tablesDone.Load())
-			job.RowsDone = rowsDone.Load()
+			tablesDoneAtomic.Add(1)
+			rowsDoneAtomic.Add(n)
+			job.TablesDone = int(tablesDoneAtomic.Load())
+			job.RowsDone = rowsDoneAtomic.Load()
 			_ = e.Store.UpdateJob(job)
 			if e.OnProgress != nil {
 				e.OnProgress()
@@ -302,7 +419,7 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 	return nil
 }
 
-func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, task *store.TableTask) (int64, syncState, error) {
+func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, chunkTimeout time.Duration, task *store.TableTask) (int64, syncState, error) {
 	var total int64
 	cur := state
 	var lastUI time.Time
@@ -312,16 +429,20 @@ func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID stri
 			return total, cur, ctx.Err()
 		default:
 		}
-		rows, cols, next, err := e.fetchIncremental(ctx, ora, meta, batch, cur)
+		chunkCtx, cancel := context.WithTimeout(ctx, chunkTimeout)
+		rows, cols, next, err := e.fetchIncremental(chunkCtx, ora, meta, batch, cur)
 		if err != nil {
-			return total, cur, err
+			cancel()
+			return total, cur, wrapChunkErr(err, chunkTimeout)
 		}
 		if len(rows) == 0 {
+			cancel()
 			break
 		}
-		n, err := dbconn.MergeUpsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, cols, meta.PrimaryKeys, rows)
+		n, err := dbconn.MergeUpsertMSSQL(chunkCtx, mssqlDB, meta.Schema, meta.Name, cols, meta.PrimaryKeys, rows)
+		cancel()
 		if err != nil {
-			return total, cur, err
+			return total, cur, wrapChunkErr(err, chunkTimeout)
 		}
 		total += n
 		cur = next
@@ -348,27 +469,63 @@ func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID stri
 	return total, cur, nil
 }
 
-func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int) (int64, error) {
+func (e *Engine) copyTable(ctx context.Context, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, startRowID string, chunkTimeout time.Duration, task *store.TableTask) (int64, error) {
 	colNames := make([]string, len(meta.Columns))
 	for i, c := range meta.Columns {
 		colNames[i] = c.Name
 	}
 	var total int64
-	var lastRowID string
+	if task != nil {
+		total = task.RowsDone
+	}
+	lastRowID := startRowID
+	var lastUI time.Time
 	for {
-		rows, nextRowID, err := e.fetchFullChunk(ctx, ora, meta, colNames, batch, lastRowID)
+		select {
+		case <-ctx.Done():
+			if task != nil {
+				task.LastRowID = lastRowID
+				task.RowsDone = total
+			}
+			return total, ctx.Err()
+		default:
+		}
+		chunkCtx, cancel := context.WithTimeout(ctx, chunkTimeout)
+		rows, nextRowID, err := e.fetchFullChunk(chunkCtx, ora, meta, colNames, batch, lastRowID)
 		if err != nil {
-			return total, err
+			cancel()
+			if task != nil {
+				task.LastRowID = lastRowID
+				task.RowsDone = total
+			}
+			return total, wrapChunkErr(err, chunkTimeout)
 		}
 		if len(rows) == 0 {
+			cancel()
 			break
 		}
-		n, err := dbconn.BulkInsertMSSQL(ctx, mssqlDB, meta.Schema, meta.Name, colNames, rows)
+		n, err := dbconn.BulkInsertMSSQL(chunkCtx, mssqlDB, meta.Schema, meta.Name, colNames, rows)
+		cancel()
 		if err != nil {
-			return total, err
+			if task != nil {
+				task.LastRowID = lastRowID
+				task.RowsDone = total
+			}
+			return total, wrapChunkErr(err, chunkTimeout)
 		}
 		total += n
 		lastRowID = nextRowID
+		if task != nil {
+			task.LastRowID = lastRowID
+			task.RowsDone = total
+			if time.Since(lastUI) >= 3*time.Second {
+				_ = e.Store.UpsertTableTask(*task)
+				lastUI = time.Now()
+				if e.OnProgress != nil {
+					e.OnProgress()
+				}
+			}
+		}
 		if len(rows) < batch {
 			break
 		}

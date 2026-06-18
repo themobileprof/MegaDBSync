@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS settings (
   schedule_dest_id TEXT NOT NULL DEFAULT '',
   default_batch_size INTEGER NOT NULL DEFAULT 50000,
   default_parallel INTEGER NOT NULL DEFAULT 2,
+  default_chunk_timeout_sec INTEGER NOT NULL DEFAULT 300,
+  default_row_count_fallback_cap INTEGER NOT NULL DEFAULT 0,
   engine_enabled INTEGER NOT NULL DEFAULT 0
 );
 
@@ -76,6 +78,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL,
   batch_size INTEGER NOT NULL,
   parallel_tables INTEGER NOT NULL,
+  chunk_timeout_sec INTEGER NOT NULL DEFAULT 0,
   table_filter TEXT NOT NULL DEFAULT '',
   error_message TEXT NOT NULL DEFAULT '',
   rows_total INTEGER NOT NULL DEFAULT 0,
@@ -101,6 +104,11 @@ CREATE TABLE IF NOT EXISTS table_tasks (
   last_watermark TEXT NOT NULL DEFAULT '',
   last_max_key TEXT NOT NULL DEFAULT '',
   last_scn INTEGER NOT NULL DEFAULT 0,
+  last_row_id TEXT NOT NULL DEFAULT '',
+  source_row_count INTEGER NOT NULL DEFAULT 0,
+  source_row_count_known INTEGER NOT NULL DEFAULT 0,
+  source_row_count_approx INTEGER NOT NULL DEFAULT 0,
+  source_row_count_exceeded INTEGER NOT NULL DEFAULT 0,
   rows_total INTEGER NOT NULL DEFAULT 0,
   rows_done INTEGER NOT NULL DEFAULT 0,
   rows_per_sec REAL NOT NULL DEFAULT 0,
@@ -153,21 +161,29 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON activity_events(created_at DESC
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN schedule_dest_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE connections ADD COLUMN windows_auth INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN engine_enabled INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN default_chunk_timeout_sec INTEGER NOT NULL DEFAULT 300`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN chunk_timeout_sec INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE table_tasks ADD COLUMN last_row_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE table_tasks ADD COLUMN source_row_count INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN default_row_count_fallback_cap INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE table_tasks ADD COLUMN source_row_count_known INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE table_tasks ADD COLUMN source_row_count_approx INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE table_tasks ADD COLUMN source_row_count_exceeded INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
 func (s *Store) GetSettings() (AppSettings, error) {
 	var st AppSettings
 	var engine int
-	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, engine_enabled FROM settings WHERE id = 1`).
-		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &engine)
+	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, default_chunk_timeout_sec, default_row_count_fallback_cap, engine_enabled FROM settings WHERE id = 1`).
+		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &st.DefaultChunkTimeoutSec, &st.DefaultRowCountFallbackCap, &engine)
 	st.EngineEnabled = engine == 1
 	return st, err
 }
 
 func (s *Store) UpdateSettings(st AppSettings) error {
-	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=? WHERE id=1`,
-		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel)
+	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=?, default_chunk_timeout_sec=?, default_row_count_fallback_cap=? WHERE id=1`,
+		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel, st.DefaultChunkTimeoutSec, st.DefaultRowCountFallbackCap)
 	return err
 }
 
@@ -283,33 +299,55 @@ func (s *Store) CreateJob(j Job) (Job, error) {
 	j.CreatedAt = now
 	j.UpdatedAt = now
 	_, err := s.db.Exec(`
-INSERT INTO jobs (id, type, source_id, dest_id, status, batch_size, parallel_tables, table_filter, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.Type, j.SourceID, j.DestID, j.Status, j.BatchSize, j.ParallelTables, j.TableFilter,
+INSERT INTO jobs (id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID, j.Type, j.SourceID, j.DestID, j.Status, j.BatchSize, j.ParallelTables, j.ChunkTimeoutSec, j.TableFilter,
 		j.CreatedAt.Format(time.RFC3339), j.UpdatedAt.Format(time.RFC3339))
 	return j, err
 }
 
+func (s *Store) UpdateJobSettings(id string, batchSize, parallel, chunkTimeout int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`UPDATE jobs SET batch_size=?, parallel_tables=?, chunk_timeout_sec=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
+		batchSize, parallel, chunkTimeout, now, id, JobPaused, JobFailed)
+	return err
+}
+
+func (s *Store) PrepareJobResume(id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`UPDATE jobs SET status=?, error_message='', completed_at=NULL, updated_at=? WHERE id=? AND status IN (?, ?)`,
+		JobRunning, now, id, JobPaused, JobFailed)
+	return err
+}
+
 func (s *Store) UpdateJob(j Job) error {
 	j.UpdatedAt = time.Now().UTC()
-	var started, completed interface{}
+	var started interface{}
 	if j.StartedAt != nil {
 		started = j.StartedAt.Format(time.RFC3339)
 	}
+	now := j.UpdatedAt.Format(time.RFC3339)
 	if j.CompletedAt != nil {
-		completed = j.CompletedAt.Format(time.RFC3339)
-	}
-	_, err := s.db.Exec(`
+		completed := j.CompletedAt.Format(time.RFC3339)
+		_, err := s.db.Exec(`
 UPDATE jobs SET status=?, error_message=?, rows_total=?, rows_done=?, tables_total=?, tables_done=?,
   current_table=?, current_phase=?, started_at=COALESCE(?, started_at), completed_at=?, updated_at=?
 WHERE id=?`,
+			j.Status, j.ErrorMessage, j.RowsTotal, j.RowsDone, j.TablesTotal, j.TablesDone,
+			j.CurrentTable, j.CurrentPhase, started, completed, now, j.ID)
+		return err
+	}
+	_, err := s.db.Exec(`
+UPDATE jobs SET status=?, error_message=?, rows_total=?, rows_done=?, tables_total=?, tables_done=?,
+  current_table=?, current_phase=?, started_at=COALESCE(?, started_at), completed_at=NULL, updated_at=?
+WHERE id=?`,
 		j.Status, j.ErrorMessage, j.RowsTotal, j.RowsDone, j.TablesTotal, j.TablesDone,
-		j.CurrentTable, j.CurrentPhase, started, completed, j.UpdatedAt.Format(time.RFC3339), j.ID)
+		j.CurrentTable, j.CurrentPhase, started, now, j.ID)
 	return err
 }
 
 func (s *Store) GetJob(id string) (Job, error) {
-	row := s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, table_filter,
+	row := s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
   error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
@@ -319,7 +357,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, table_filter,
+	rows, err := s.db.Query(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
   error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -338,7 +376,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 }
 
 func (s *Store) ActiveJob() (*Job, error) {
-	j, err := scanJob(s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, table_filter,
+	j, err := scanJob(s.db.QueryRow(`SELECT id, type, source_id, dest_id, status, batch_size, parallel_tables, chunk_timeout_sec, table_filter,
   error_message, rows_total, rows_done, tables_total, tables_done, current_table, current_phase,
   started_at, completed_at, created_at, updated_at FROM jobs WHERE status IN ('pending','running','paused') ORDER BY created_at LIMIT 1`))
 	if err == sql.ErrNoRows {
@@ -365,25 +403,40 @@ func (s *Store) UpsertTableTask(t TableTask) error {
 	}
 	_, err := s.db.Exec(`
 INSERT INTO table_tasks (id, job_id, schema_name, table_name, status, sync_mode, watermark_col,
-  last_watermark, last_max_key, last_scn, rows_total, rows_done, rows_per_sec, error_message,
+  last_watermark, last_max_key, last_scn, last_row_id, source_row_count, source_row_count_known,
+  source_row_count_approx, source_row_count_exceeded, rows_total, rows_done, rows_per_sec, error_message,
   started_at, completed_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(job_id, schema_name, table_name) DO UPDATE SET
   status=excluded.status, sync_mode=excluded.sync_mode, watermark_col=excluded.watermark_col,
   last_watermark=excluded.last_watermark, last_max_key=excluded.last_max_key, last_scn=excluded.last_scn,
+  last_row_id=excluded.last_row_id, source_row_count=excluded.source_row_count,
+  source_row_count_known=excluded.source_row_count_known,
+  source_row_count_approx=excluded.source_row_count_approx,
+  source_row_count_exceeded=excluded.source_row_count_exceeded,
   rows_total=excluded.rows_total, rows_done=excluded.rows_done, rows_per_sec=excluded.rows_per_sec,
   error_message=excluded.error_message, started_at=COALESCE(table_tasks.started_at, excluded.started_at),
   completed_at=excluded.completed_at, updated_at=excluded.updated_at`,
 		t.ID, t.JobID, t.SchemaName, t.TableName, t.Status, t.SyncMode, t.WatermarkCol,
-		t.LastWatermark, t.LastMaxKey, t.LastSCN, t.RowsTotal, t.RowsDone, t.RowsPerSec, t.ErrorMessage,
+		t.LastWatermark, t.LastMaxKey, t.LastSCN, t.LastRowID, t.SourceRowCount, boolInt(t.SourceRowCountKnown),
+		boolInt(t.SourceRowCountApprox), boolInt(t.SourceRowCountExceeded),
+		t.RowsTotal, t.RowsDone, t.RowsPerSec, t.ErrorMessage,
 		started, completed, t.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func (s *Store) ListTableTasks(jobID string) ([]TableTask, error) {
 	rows, err := s.db.Query(`SELECT id, job_id, schema_name, table_name, status, sync_mode, watermark_col,
-  last_watermark, last_max_key, last_scn, rows_total, rows_done, rows_per_sec, error_message,
-  started_at, completed_at, updated_at FROM table_tasks WHERE job_id=? ORDER BY schema_name, table_name`, jobID)
+  last_watermark, last_max_key, last_scn, last_row_id, source_row_count, source_row_count_known,
+  source_row_count_approx, source_row_count_exceeded, rows_total, rows_done, rows_per_sec, error_message,
+  started_at, completed_at, updated_at FROM table_tasks WHERE job_id=? ORDER BY source_row_count ASC, schema_name, table_name`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +599,7 @@ func scanConnectionRow(row *sql.Row) (Connection, error) {
 func scanJob(rows scannable) (Job, error) {
 	var j Job
 	var started, completed, created, updated sql.NullString
-	if err := rows.Scan(&j.ID, &j.Type, &j.SourceID, &j.DestID, &j.Status, &j.BatchSize, &j.ParallelTables, &j.TableFilter,
+	if err := rows.Scan(&j.ID, &j.Type, &j.SourceID, &j.DestID, &j.Status, &j.BatchSize, &j.ParallelTables, &j.ChunkTimeoutSec, &j.TableFilter,
 		&j.ErrorMessage, &j.RowsTotal, &j.RowsDone, &j.TablesTotal, &j.TablesDone, &j.CurrentTable, &j.CurrentPhase,
 		&started, &completed, &created, &updated); err != nil {
 		return j, err
@@ -567,11 +620,16 @@ func scanJob(rows scannable) (Job, error) {
 func scanTableTask(rows scannable) (TableTask, error) {
 	var t TableTask
 	var started, completed, updated sql.NullString
+	var known, approx, exceeded int
 	if err := rows.Scan(&t.ID, &t.JobID, &t.SchemaName, &t.TableName, &t.Status, &t.SyncMode, &t.WatermarkCol,
-		&t.LastWatermark, &t.LastMaxKey, &t.LastSCN, &t.RowsTotal, &t.RowsDone, &t.RowsPerSec, &t.ErrorMessage,
+		&t.LastWatermark, &t.LastMaxKey, &t.LastSCN, &t.LastRowID, &t.SourceRowCount, &known, &approx, &exceeded,
+		&t.RowsTotal, &t.RowsDone, &t.RowsPerSec, &t.ErrorMessage,
 		&started, &completed, &updated); err != nil {
 		return t, err
 	}
+	t.SourceRowCountKnown = known == 1
+	t.SourceRowCountApprox = approx == 1
+	t.SourceRowCountExceeded = exceeded == 1
 	if started.Valid {
 		tt, _ := time.Parse(time.RFC3339, started.String)
 		t.StartedAt = &tt
