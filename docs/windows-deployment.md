@@ -1,6 +1,8 @@
 # Windows deployment guide
 
-Complete instructions for downloading MegaDBSync, running it as a Windows service, and exposing the web UI through IIS with HTTPS.
+Complete instructions for downloading MegaDBSync, running it as a Windows service, and optional HTTPS via IIS.
+
+For **IIS reverse proxy only**, see **[IIS reverse proxy guide](iis-reverse-proxy.md)**.
 
 ---
 
@@ -240,125 +242,11 @@ sc.exe start MegaDBSync
 
 ---
 
-## 5. IIS reverse proxy (HTTPS)
+## 5. HTTPS via IIS (optional)
 
-Expose the UI on port **443** while MegaDBSync stays on localhost **8080**.
+Use IIS for TLS on port **443** while MegaDBSync stays on **127.0.0.1:8080**.
 
-### 5.1 Install IIS features
-
-On Windows Server (PowerShell as Administrator):
-
-```powershell
-Install-WindowsFeature Web-Server, Web-WebSockets, Web-Mgmt-Console
-```
-
-On Windows 10/11 (optional components):
-
-```powershell
-Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole, IIS-WebServer, IIS-ManagementConsole -All
-```
-
-### 5.2 Install URL Rewrite and ARR
-
-1. Install **IIS URL Rewrite Module 2**: [download](https://www.iis.net/downloads/microsoft/url-rewrite)
-2. Install **Application Request Routing 3**: [download](https://www.iis.net/downloads/microsoft/application-request-routing)
-
-Enable the ARR proxy (once per server):
-
-1. Open **IIS Manager**
-2. Click the **server node** (top level, not a site)
-3. Open **Application Request Routing Cache**
-4. Click **Server Proxy Settings** (right panel)
-5. Check **Enable proxy**
-6. Click **Apply**
-
-Or via PowerShell (after ARR is installed):
-
-```powershell
-Import-Module WebAdministration
-Set-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter "system.webServer/proxy" -name "enabled" -value "True"
-```
-
-### 5.3 Create the IIS site
-
-Example: host name `megadbsync.contoso.local`, site root `C:\inetpub\megadbsync-proxy` (only holds `web.config`).
-
-```powershell
-New-Item -ItemType Directory -Force -Path C:\inetpub\megadbsync-proxy
-New-Website -Name "MegaDBSync" -Port 443 -PhysicalPath "C:\inetpub\megadbsync-proxy" -HostHeader "megadbsync.contoso.local" -Ssl
-```
-
-Bind an HTTPS certificate:
-
-- **IIS Manager** → site **MegaDBSync** → **Bindings** → HTTPS → select your certificate
-- Or use `New-SelfSignedCertificate` for lab/testing only
-
-### 5.4 web.config — reverse proxy + SSE support
-
-MegaDBSync uses **Server-Sent Events** (`/api/events`) for the live dashboard. IIS must not buffer the proxied response.
-
-Create `C:\inetpub\megadbsync-proxy\web.config`:
-
-Copy from [`docs/iis-web.config.example`](iis-web.config.example) in this repository, or use:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-  <system.webServer>
-    <webSocket enabled="false" />
-    <proxy enabled="true" preserveHostHeader="false" reverseRewriteHostInResponseHeaders="false" />
-
-    <rewrite>
-      <rules>
-        <rule name="MegaDBSync reverse proxy" stopProcessing="true">
-          <match url="(.*)" />
-          <action type="Rewrite" url="http://127.0.0.1:8080/{R:1}" />
-          <serverVariables>
-            <set name="HTTP_X_FORWARDED_PROTO" value="https" />
-            <set name="HTTP_X_FORWARDED_FOR" value="{REMOTE_ADDR}" />
-          </serverVariables>
-        </rule>
-      </rules>
-    </rewrite>
-
-    <!-- Allow server variables (first time only — see step 5.5) -->
-    <security>
-      <requestFiltering allowDoubleEscaping="true" />
-    </security>
-  </system.webServer>
-</configuration>
-```
-
-Allow the rewrite module to set server variables. In IIS Manager:
-
-1. Server node → **URL Rewrite**
-2. **View Server Variables** (right panel) → Add:
-   - `HTTP_X_FORWARDED_PROTO`
-   - `HTTP_X_FORWARDED_FOR`
-
-Or add to `%windir%\System32\inetsrv\config\applicationHost.config` under `<rewrite><allowedServerVariables>` (use IIS Manager when possible).
-
-### 5.5 Disable response buffering for SSE (important)
-
-For the live dashboard to update, ARR must stream `/api/events` without buffering.
-
-1. IIS Manager → server node → **Application Request Routing Cache** → **Server Proxy Settings**
-2. Set **Response buffer threshold** to **0** (zero)
-3. Apply
-
-If the dashboard appears frozen but jobs run, this setting is the most common fix.
-
-### 5.6 Verify through IIS
-
-```powershell
-# From the server
-Invoke-WebRequest -Uri https://megadbsync.contoso.local/api/bootstrap -UseBasicParsing
-
-# From a client with DNS/hosts entry pointing to the server
-# Open https://megadbsync.contoso.local in a browser
-```
-
-Sign in with the admin password created during first run.
+**→ [IIS reverse proxy guide](iis-reverse-proxy.md)** — install ARR/URL Rewrite, `web.config`, SSE settings, and verification.
 
 ---
 
@@ -419,7 +307,7 @@ MegaDBSync uses `encrypt=true` and `TrustServerCertificate=true` for SQL Server 
 | Oracle **Database** field | Use **service name** (e.g. `XEPDB1`), not SID |
 | SQL integrated auth fails | Service account must be a Windows login in SQL Server |
 | Connection hangs then fails | Increase connect timeout in Settings; verify firewall with `Test-NetConnection` |
-| Dashboard frozen behind IIS | ARR response buffer threshold = 0 (see section 5.5) |
+| Dashboard frozen behind IIS | ARR response buffer threshold = 0 — see [IIS reverse proxy guide](iis-reverse-proxy.md) |
 
 ---
 
@@ -472,7 +360,7 @@ Restart and open the UI — you will get the first-run password setup again.
 | Service starts then stops | Wrong path, blocked exe, or port in use | Check `megadbsync-error.log`; run `megadbsync.exe` interactively |
 | Cannot connect to Oracle/SQL | Firewall, wrong port, credentials | `Test-NetConnection`; test connections in UI |
 | Integrated SQL auth fails | Service account not a SQL login | Add Windows login in SSMS; grant DB access |
-| UI loads but dashboard frozen | IIS buffering SSE | ARR response buffer threshold = 0 |
+| UI loads but dashboard frozen | IIS buffering SSE | [IIS guide](iis-reverse-proxy.md) — ARR buffer threshold = 0 |
 | 502.3 Bad Gateway | MegaDBSync not running on 8080 | `Get-Service MegaDBSync`; curl `http://127.0.0.1:8080/api/bootstrap` |
 | DPAPI decrypt errors after account change | Passwords encrypted under different user | Re-enter connection passwords in UI |
 | Bulk job blocked | Destination not empty | Use empty SQL Server DB or new database |
@@ -487,9 +375,7 @@ Invoke-WebRequest http://127.0.0.1:8080/api/bootstrap -UseBasicParsing
 
 ### Confirm IIS proxy
 
-```powershell
-Invoke-WebRequest https://megadbsync.contoso.local/api/bootstrap -UseBasicParsing
-```
+See [IIS reverse proxy guide](iis-reverse-proxy.md#4-verify).
 
 ---
 

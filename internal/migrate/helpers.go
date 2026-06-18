@@ -111,6 +111,43 @@ func destTableLabel(meta dbconn.TableMeta) string {
 	return meta.DestSchema + "." + meta.Name
 }
 
+func syncStateSummary(meta dbconn.TableMeta, st syncState) string {
+	switch meta.SyncMode {
+	case "watermark":
+		if meta.WatermarkCol == "" {
+			return "watermark"
+		}
+		if st.watermark != "" {
+			return fmt.Sprintf("%s > %s", meta.WatermarkCol, st.watermark)
+		}
+		return fmt.Sprintf("%s (establishing baseline)", meta.WatermarkCol)
+	case "max_key":
+		if len(meta.PrimaryKeys) == 0 {
+			return "max_key"
+		}
+		if st.maxKey != "" {
+			return fmt.Sprintf("%s > %s", meta.PrimaryKeys[0], st.maxKey)
+		}
+		return fmt.Sprintf("%s (establishing baseline)", meta.PrimaryKeys[0])
+	default:
+		if st.scn > 0 {
+			return fmt.Sprintf("ORA_ROWSCN > %d", st.scn)
+		}
+		return "ORA_ROWSCN (establishing baseline)"
+	}
+}
+
+func incrementalNeedsBaseline(meta dbconn.TableMeta, st syncState) bool {
+	switch meta.SyncMode {
+	case "watermark":
+		return st.watermark == ""
+	case "max_key":
+		return st.maxKey == "" && len(meta.PrimaryKeys) > 0
+	default:
+		return st.scn == 0
+	}
+}
+
 
 func wrapChunkErr(err error, timeout time.Duration) error {
 	if err == nil {

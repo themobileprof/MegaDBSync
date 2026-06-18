@@ -196,7 +196,8 @@
               <button class="btn primary" type="submit">Create &amp; start</button>
             </div>
           </form>
-          <p class="muted note">Tables migrate smallest-first. Set <strong>Max rows per table</strong> to <strong>5</strong> for a quick sample of every table (use <strong>Date range backup</strong> so the destination need not be empty). Bulk migration requires an empty destination.</p>
+          <p class="muted note">Tables migrate smallest-first. <strong>Incremental sync</strong> runs one check pass (not a continuous daemon) — use <strong>Settings</strong> schedule + <strong>Start engine</strong> for automatic repeats. Run <strong>bulk migration</strong> first to load data; incremental picks up changes after that.</p>
+          <p class="muted note">Quick sample: <strong>Date range backup</strong> with <strong>Max rows per table = 5</strong>. Bulk migration requires an empty destination.</p>
         </div>
         <div class="card">
           <h3>Recent jobs</h3>

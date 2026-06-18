@@ -20,7 +20,52 @@
 - Network access to Oracle and SQL Server
 - Pure Go build — **no CGO or Oracle Instant Client required** (uses `go-ora`)
 
-## Quick start (local)
+---
+
+## Download the release binary
+
+Permanent builds are on **[GitHub Releases](https://github.com/themobileprof/mdas/releases)** (tagged `v*`, e.g. `v1.0.0`).
+
+1. Open **Releases** → latest version (e.g. `v1.0.0`)
+2. Download **`megadbsync.exe`** from **Assets**
+3. On the server:
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\MegaDBSync
+# Copy megadbsync.exe into C:\MegaDBSync\
+Unblock-File -Path C:\MegaDBSync\megadbsync.exe
+```
+
+> Short-lived CI artifacts (30 days) are also on every `main` build; **Releases** are the long-term download.
+
+---
+
+## Deploy on Windows (production checklist)
+
+| Step | Action |
+|------|--------|
+| 1 | Download `megadbsync.exe` (above) to `C:\MegaDBSync\` |
+| 2 | Smoke test: `.\megadbsync.exe -addr 127.0.0.1:8080` → open http://127.0.0.1:8080, set admin password, test connections |
+| 3 | Install as a service (NSSM recommended) — see [Windows deployment guide](docs/windows-deployment.md#4-run-as-a-windows-service) |
+| 4 | Service args: `-addr 127.0.0.1:8080 -data C:\ProgramData\MegaDBSync` |
+| 5 | Grant service account read/write on `C:\ProgramData\MegaDBSync` and network access to Oracle + SQL Server |
+| 6 | (Optional) HTTPS via [IIS reverse proxy](docs/iis-reverse-proxy.md) |
+| 7 | Dashboard → **Start engine** → run **bulk migration** → configure **Settings** schedule for incremental sync |
+
+Full detail (NSSM commands, firewall, SQL integrated auth, backup, troubleshooting): **[Windows deployment guide](docs/windows-deployment.md)**
+
+### Build from source (optional)
+
+```powershell
+git clone https://github.com/themobileprof/mdas.git
+cd mdas
+go mod tidy
+go build -trimpath -ldflags="-s -w" -o megadbsync.exe .\cmd\megadbsync
+```
+
+---
+
+## Quick start (local dev)
 
 ```powershell
 go mod tidy
@@ -28,46 +73,42 @@ go build -o megadbsync.exe .\cmd\megadbsync
 .\megadbsync.exe -addr 127.0.0.1:8080
 ```
 
-Open http://127.0.0.1:8080 — create an admin password, add connections, **Start engine** on the dashboard, then start a job.
+Open http://127.0.0.1:8080 — create an admin password, add connections, **Start engine**, then start a job.
 
-State is stored under **`%ProgramData%\MegaDBSync\`** by default (override with `-data` or `%MEGADBSYNC_DATA%`). Existing installs that used `%ProgramData%\MDAS\` are detected automatically.
+State is stored under **`%ProgramData%\MegaDBSync\`** by default (override with `-data` or `%MEGADBSYNC_DATA%`).
 
-## Download a release binary
-
-Permanent builds are attached to **[GitHub Releases](https://github.com/themobileprof/mdas/releases)** (tagged `v*`, e.g. `v1.0.0`).
-
-1. Open **Releases** on the repository
-2. Download **`megadbsync.exe`** from the latest release
-3. Copy to e.g. `C:\MegaDBSync\megadbsync.exe` and run
-
-CI also uploads short-lived build artifacts (30 days) on every push to `main`; releases are the long-term download location.
-
-To publish a new release from your machine:
-
-```powershell
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The **Release** workflow builds `megadbsync.exe` and attaches it to the GitHub release automatically.
-
-## Production deployment on Windows
-
-**[Windows deployment guide](docs/windows-deployment.md)** — full instructions for:
-
-- Downloading `megadbsync.exe` from GitHub Releases
-- Installing and upgrading on a server
-- Running as a Windows Service (NSSM or `sc.exe`)
-- IIS reverse proxy with HTTPS and SSE (live dashboard)
-- Service accounts, firewall, SQL integrated auth, backup, and troubleshooting
+---
 
 ## Usage notes
 
 1. **Migration engine** — stopped by default; use **Dashboard → Start engine** before jobs or scheduled sync.
-2. **Bulk migration** — destination must be completely empty (zero user tables).
-3. **Incremental sync** — safe on populated destinations; uses upsert (`MERGE`).
+2. **Bulk migration** — destination must be completely empty (zero user tables). Establishes sync baselines for incremental.
+3. **Incremental sync** — one pass per job: checks each table for changes since the last watermark/SCN and upserts. **Not** a always-on daemon — use **Settings → schedule** + **engine running** for automatic repeats.
 4. **Hard deletes** — not replicated; ghost rows may remain in SQL Server (by design).
 5. **Performance** — increase batch size and parallel tables for large datasets.
+
+### How incremental sync works
+
+```
+Bulk migration (once)  →  loads all rows + saves watermark/SCN per table
+Incremental sync job   →  reads Oracle WHERE watermark/SCN > last value → MERGE into SQL Server
+Scheduled sync         →  engine running + cron in Settings creates incremental jobs automatically
+```
+
+**First incremental run** on a table with no baseline: sets the baseline from current Oracle high-water mark (0 rows copied). **Second run** after you change data in Oracle: copies only new/changed rows.
+
+### Test incremental sync
+
+1. **Bulk migrate** one small table (or full schema) into an empty SQL Server database.
+2. **Dashboard → Start engine**.
+3. Run **Incremental sync** — Activity log should show `no changes` or `baseline set` per table.
+4. In Oracle, update or insert a row in a synced table (e.g. change a `UPDATED_AT` watermark column).
+5. Run **Incremental sync** again (or wait for the schedule) — Activity log should show `N row(s) upserted` for that table.
+6. Confirm the row in SQL Server (Explore tab → SQL Server connection → sample query).
+
+Tables without a watermark column use **ORA_ROWSCN** or **max primary key** automatically (see sync mode in Activity log).
+
+---
 
 ## Admin password
 
@@ -77,7 +118,7 @@ Set on first launch. Change under **Settings → Admin password**. To reset with
 UPDATE settings SET admin_password_hash = '' WHERE id = 1;
 ```
 
-on `%ProgramData%\MegaDBSync\megadbsync.db` (or legacy `mdas.db`), then restart.
+on `%ProgramData%\MegaDBSync\megadbsync.db`, then restart.
 
 ## Oracle permissions
 

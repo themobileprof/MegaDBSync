@@ -115,6 +115,39 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleString();
 }
 
+function fmtJobDetail(job) {
+  const base = (job.type || '').replace(/_/g, ' ');
+  if (job.type === 'incremental_sync') {
+    if (job.status === 'running') {
+      const table = job.current_table ? ` · ${job.current_table}` : '';
+      const phase = job.current_phase === 'scanning' ? 'scanning tables' : 'checking for changes';
+      return `${base} · ${phase}${table}`;
+    }
+    if (job.status === 'completed' && job.rows_done === 0) {
+      return `${base} · no changes detected (see Activity log)`;
+    }
+    return `${base} · ${fmtNum(job.rows_done)} row(s) synced`;
+  }
+  if (job.date_from || job.date_to) {
+    return `${base} · ${fmtDateRange(job)} · started ${fmtTime(job.started_at)}`;
+  }
+  return `${base} · started ${fmtTime(job.started_at)}`;
+}
+
+function fmtTaskProgress(t) {
+  if (t.sync_mode && t.sync_mode !== 'date_backup') {
+    const mode = t.sync_mode === 'ora_rowscn' ? 'SCN' : (t.watermark_col || t.sync_mode);
+    if (t.status === 'completed' && t.rows_done === 0) {
+      return `no changes (${mode})`;
+    }
+    return `${fmtNum(t.rows_done)} synced (${mode})`;
+  }
+  if (t.source_row_count_known) {
+    return `${fmtNum(t.rows_done)} / ${t.source_row_count_exceeded ? fmtNum(t.source_row_count) + '+' : fmtNum(t.source_row_count)} copied`;
+  }
+  return `${fmtNum(t.rows_done)} copied`;
+}
+
 function renderDashboard(data) {
   const working = data.working;
   const engineOn = !!data.engine_enabled;
@@ -148,15 +181,19 @@ function renderDashboard(data) {
   } else {
     card.classList.remove('hidden');
     const paused = job.status === 'paused' || job.status === 'failed';
-    $('#status-headline').textContent = job.status === 'running' ? 'Migration in progress' : titleCase(job.status);
+    $('#status-headline').textContent = job.status === 'running'
+      ? (job.type === 'incremental_sync' ? 'Incremental sync running' : 'Migration in progress')
+      : titleCase(job.status);
     $('#status-detail').textContent = paused && job.error_message
       ? job.error_message
-      : `${job.type.replace(/_/g, ' ')}${job.date_from || job.date_to ? ` · ${fmtDateRange(job)}` : ''} · started ${fmtTime(job.started_at)}`;
+      : fmtJobDetail(job);
     $('#job-phase').textContent = job.current_phase || job.status;
     $('#job-table').textContent = job.current_table || '';
     $('#job-rows').textContent = fmtNum(job.rows_done);
     const est = $('#job-num-rows-total');
-    if (job.rows_total > 0) {
+    if (job.type === 'incremental_sync') {
+      est.textContent = job.status === 'running' ? '· rows synced this run' : '';
+    } else if (job.rows_total > 0) {
       est.textContent = `· Σ NUM_ROWS ${fmtNum(job.rows_total)} (stats)`;
     } else {
       est.textContent = '';
@@ -190,9 +227,7 @@ function renderDashboard(data) {
     taskEl.className = 'task-list';
     taskEl.innerHTML = tasks.map(t => {
       const err = t.error_message ? `<div class="error">${esc(t.error_message)}</div>` : '';
-      const progress = t.source_row_count_known
-        ? `${fmtNum(t.rows_done)} / ${t.source_row_count_exceeded ? fmtNum(t.source_row_count) + '+' : fmtNum(t.source_row_count)} copied`
-        : `${fmtNum(t.rows_done)} copied`;
+      const progress = fmtTaskProgress(t);
       const dateCol = t.sync_mode === 'date_backup' && t.watermark_col ? ` · ${esc(t.watermark_col)}` : '';
       return `
       <div class="task-item ${t.status}">

@@ -262,12 +262,12 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		job.StartedAt = &now
 	}
 	job.Status = store.JobRunning
-	job.CurrentPhase = "incremental"
+	job.CurrentPhase = "scanning"
 	_ = e.Store.UpdateJob(job)
 	if resuming {
 		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Resuming incremental sync: %d tables", len(tableList)))
 	} else {
-		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting incremental sync: %d tables (smallest first)", len(tableList)))
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Starting incremental sync: %d tables — checking for changes since last watermark", len(tableList)))
 	}
 
 	type tableWork struct {
@@ -289,13 +289,28 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 			meta.WatermarkCol = wmCol
 		}
 		key := tableTaskKey(meta.DestSchema, meta.Name)
-		if t, ok := taskByKey[key]; ok && isTableWorkComplete(t.Status) {
-			continue
+		if resuming {
+			if tsk, ok := taskByKey[key]; ok && isTableWorkComplete(tsk.Status) {
+				continue
+			}
 		}
-		works = append(works, tableWork{
-			meta:  meta,
-			state: syncState{watermark: wm, maxKey: maxKey, scn: scn},
-		})
+		st := syncState{watermark: wm, maxKey: maxKey, scn: scn}
+		works = append(works, tableWork{meta: meta, state: st})
+		job.CurrentTable = destTableLabel(meta)
+		job.CurrentPhase = "scanning"
+		_ = e.Store.UpdateJob(job)
+	}
+	if len(works) == 0 {
+		if len(tableList) == 0 {
+			return fmt.Errorf("no Oracle tables found to sync (check source schema filter)")
+		}
+		_ = e.Store.LogEvent(job.ID, "info", "All tables already checked in this run — nothing to resume")
+		job.Status = store.JobCompleted
+		job.CurrentPhase = "done"
+		end := time.Now().UTC()
+		job.CompletedAt = &end
+		_ = e.Store.UpdateJob(job)
+		return nil
 	}
 	sort.Slice(works, func(i, j int) bool {
 		if works[i].meta.RowCount != works[j].meta.RowCount {
@@ -308,6 +323,11 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 	job.RowsTotal = rowsTotal
 	job.TablesDone = tablesDone
 	job.RowsDone = rowsDone
+	job.TablesTotal = len(works)
+	if resuming {
+		job.TablesTotal = tablesDone + len(works)
+	}
+	job.CurrentPhase = "syncing"
 	_ = e.Store.UpdateJob(job)
 
 	parallel := max(1, job.ParallelTables)
@@ -330,6 +350,10 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 		go func() {
 			defer func() { <-sem }()
 			meta := w.meta
+			job.CurrentTable = destTableLabel(meta)
+			job.CurrentPhase = "syncing"
+			_ = e.Store.UpdateJob(job)
+			_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Checking %s (%s, mode %s)", destTableLabel(meta), syncStateSummary(meta, w.state), meta.SyncMode))
 			task := store.TableTask{
 				JobID: job.ID, SchemaName: meta.DestSchema, TableName: meta.Name,
 				Status: store.JobRunning, SyncMode: meta.SyncMode, WatermarkCol: meta.WatermarkCol,
@@ -349,7 +373,7 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 			task.ErrorMessage = ""
 			_ = e.Store.UpsertTableTask(task)
 
-			n, newState, err := e.syncTableIncremental(ctx, job.SourceID, job.DestID, ora, mssqlDB, meta, job.BatchSize, w.state, timeout, &task)
+			n, newState, err := e.syncTableIncremental(ctx, job.ID, job.SourceID, job.DestID, ora, mssqlDB, meta, job.BatchSize, w.state, timeout, &task)
 			if err != nil {
 				if ctx.Err() != nil {
 					task.Status = store.JobPaused
@@ -382,6 +406,11 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 			task.LastMaxKey = newState.maxKey
 			task.LastSCN = newState.scn
 			_ = e.Store.UpsertTableTask(task)
+			if n == 0 {
+				_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("%s: no changes (%s)", destTableLabel(meta), syncStateSummary(meta, newState)))
+			} else {
+				_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("%s: %d row(s) upserted (%s)", destTableLabel(meta), n, syncStateSummary(meta, newState)))
+			}
 			_ = e.Store.UpsertSyncState(job.SourceID, job.DestID, meta.Schema, meta.Name,
 				meta.SyncMode, meta.WatermarkCol, newState.watermark, newState.maxKey, newState.scn)
 			done <- n
@@ -411,17 +440,33 @@ func (e *Engine) RunIncremental(ctx context.Context, job store.Job, src, dst sto
 	end := time.Now().UTC()
 	job.CompletedAt = &end
 	_ = e.Store.UpdateJob(job)
-	_ = e.Store.LogEvent(job.ID, "info", "Incremental sync completed")
+	rowsSynced := rowsDoneAtomic.Load()
+	if rowsSynced == 0 {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Incremental sync finished: checked %d table(s) — no changes since last sync. Run again after Oracle updates, or use Settings to schedule automatic checks.", len(works)))
+	} else {
+		_ = e.Store.LogEvent(job.ID, "info", fmt.Sprintf("Incremental sync finished: %d row(s) upserted across %d table(s)", rowsSynced, len(works)))
+	}
 	return nil
 }
 
-func (e *Engine) syncTableIncremental(ctx context.Context, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, chunkTimeout time.Duration, task *store.TableTask) (int64, syncState, error) {
+func (e *Engine) syncTableIncremental(ctx context.Context, jobID, sourceID, destID string, ora, mssqlDB *sql.DB, meta dbconn.TableMeta, batch int, state syncState, chunkTimeout time.Duration, task *store.TableTask) (int64, syncState, error) {
 	normalizeDestSchema(&meta)
 	if err := dbconn.PrepareDestinationTable(ctx, mssqlDB, meta); err != nil {
 		return 0, state, err
 	}
-	var total int64
 	cur := state
+	if incrementalNeedsBaseline(meta, cur) {
+		high, err := e.captureSyncHighWater(ctx, ora, meta)
+		if err != nil {
+			return 0, cur, fmt.Errorf("establish sync baseline: %w", err)
+		}
+		cur = high
+		_ = e.Store.UpsertSyncState(sourceID, destID, meta.Schema, meta.Name,
+			meta.SyncMode, meta.WatermarkCol, cur.watermark, cur.maxKey, cur.scn)
+		_ = e.Store.LogEvent(jobID, "info", fmt.Sprintf("%s: baseline set (%s) — future runs will pick up changes", destTableLabel(meta), syncStateSummary(meta, cur)))
+		return 0, cur, nil
+	}
+	var total int64
 	var lastUI time.Time
 	for {
 		select {
