@@ -42,6 +42,35 @@ func TestResolveTableDependenciesNested(t *testing.T) {
 	}
 }
 
+func TestInferSkipsLongStringColumns(t *testing.T) {
+	longLen := int64(100)
+	idx := schemaTableIndex{
+		Owner: "SCHOOL",
+		Tables: map[string]TableRef{
+			"STUDENTS":    {Schema: "SCHOOL", Name: "STUDENTS"},
+			"ENROLLMENTS": {Schema: "SCHOOL", Name: "ENROLLMENTS"},
+		},
+		Columns: map[string][]string{
+			"STUDENTS":    {"STUDENT_CODE"},
+			"ENROLLMENTS": {"STUDENT_CODE"},
+		},
+		ColTypes: columnTypes{
+			"STUDENTS":    {"STUDENT_CODE": {DataType: "VARCHAR2", CharMaxLen: &longLen}},
+			"ENROLLMENTS": {"STUDENT_CODE": {DataType: "VARCHAR2", CharMaxLen: &longLen}},
+		},
+		PKCols: map[string]map[string]bool{
+			"STUDENTS": {"STUDENT_CODE": true},
+		},
+		ColIndex: map[string][]string{
+			"STUDENT_CODE": {"STUDENTS", "ENROLLMENTS"},
+		},
+	}
+	inferred := InferColumnRelationships(idx, []TableRef{{Name: "ENROLLMENTS"}}, nil)
+	if len(inferred) != 0 {
+		t.Fatalf("inferred = %#v, want none for long varchar columns", inferred)
+	}
+}
+
 func TestFormatTableFilter(t *testing.T) {
 	got := FormatTableFilter([]TableRef{
 		{Schema: "SCHOOL", Name: "STUDENTS"},

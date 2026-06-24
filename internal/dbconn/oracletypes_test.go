@@ -40,6 +40,50 @@ func TestMapOracleType(t *testing.T) {
 	}
 }
 
+func TestIsIntegerOracleColumn(t *testing.T) {
+	tests := []struct {
+		name string
+		col  ColumnMeta
+		want bool
+	}{
+		{"number int", ColumnMeta{DataType: "NUMBER", NumericPrec: int64Ptr(9), NumericScale: int64Ptr(0)}, true},
+		{"number decimal", ColumnMeta{DataType: "NUMBER", NumericPrec: int64Ptr(12), NumericScale: int64Ptr(2)}, false},
+		{"number unconstrained", ColumnMeta{DataType: "NUMBER"}, true},
+		{"integer type", ColumnMeta{DataType: "INTEGER"}, true},
+		{"varchar", ColumnMeta{DataType: "VARCHAR2"}, false},
+		{"date", ColumnMeta{DataType: "DATE"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsIntegerOracleColumn(tc.col); got != tc.want {
+				t.Fatalf("IsIntegerOracleColumn() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsShortStringPKColumn(t *testing.T) {
+	tests := []struct {
+		name string
+		col  ColumnMeta
+		want bool
+	}{
+		{"varchar code", ColumnMeta{DataType: "VARCHAR2", CharMaxLen: int64Ptr(10)}, true},
+		{"char code", ColumnMeta{DataType: "CHAR", CharMaxLen: int64Ptr(5)}, true},
+		{"varchar too long", ColumnMeta{DataType: "VARCHAR2", CharMaxLen: int64Ptr(100)}, false},
+		{"varchar unknown length", ColumnMeta{DataType: "VARCHAR2"}, false},
+		{"number", ColumnMeta{DataType: "NUMBER"}, false},
+		{"clob", ColumnMeta{DataType: "CLOB"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsShortStringPKColumn(tc.col); got != tc.want {
+				t.Fatalf("IsShortStringPKColumn() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeValueForMSSQL(t *testing.T) {
 	numCol := ColumnMeta{DataType: "NUMBER"}
 	if got := NormalizeValueForMSSQL(float64(42), numCol); got != int64(42) {

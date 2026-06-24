@@ -317,6 +317,8 @@ body {
 .job-fk-panel h4 { margin: 0 0 0.35rem; font-size: 0.95rem; }
 .job-fk-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 0.55rem; }
 .job-fk-meta { font-size: 0.8rem; color: var(--muted); display: block; margin-top: 0.1rem; }
+.job-fk-section { font-size: 0.85rem; margin: 0.35rem 0 0.25rem; color: var(--text); }
+.job-fk-section-gap { height: 0.5rem; }
 .task-item.running { border-color: rgba(79, 140, 255, 0.45); }
 .task-meta { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.88rem; }
 .badge {

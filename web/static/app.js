@@ -516,6 +516,7 @@ function fillJobSelects(list) {
 let jobOracleTables = [];
 let jobSelectedTables = new Set();
 let jobFkDeps = null;
+let jobDiscoverDeps = null;
 
 function jobTableKey(t) {
   return `${(t.schema || '').toUpperCase()}.${(t.name || '').toUpperCase()}`;
@@ -542,6 +543,7 @@ async function loadJobTables() {
   jobOracleTables = [];
   jobSelectedTables.clear();
   jobFkDeps = null;
+  jobDiscoverDeps = null;
   updateJobTableFilterInput();
   $('#job-fk-panel')?.classList.add('hidden');
   if (!sourceId) {
@@ -591,20 +593,20 @@ function renderJobTableList() {
 async function onJobTableToggle(key, checked) {
   if (checked) jobSelectedTables.add(key);
   else jobSelectedTables.delete(key);
+  jobDiscoverDeps = null;
   updateJobTableFilterInput();
   await refreshJobFkDeps();
 }
 
 async function refreshJobFkDeps() {
   const panel = $('#job-fk-panel');
-  const listEl = $('#job-fk-list');
-  const orderEl = $('#job-fk-order');
   const sourceId = $('#job-source')?.value;
   const selected = [...jobSelectedTables];
-  if (!panel || !listEl) return;
+  if (!panel) return;
   if (!sourceId || selected.length === 0) {
     panel.classList.add('hidden');
     jobFkDeps = null;
+    jobDiscoverDeps = null;
     return;
   }
   try {
@@ -612,60 +614,149 @@ async function refreshJobFkDeps() {
       method: 'POST',
       body: JSON.stringify({ connection_id: sourceId, tables: selected }),
     });
-    renderJobFkDeps();
+    renderJobRelationshipPanel();
     panel.classList.remove('hidden');
-    if (orderEl) {
-      const order = (jobFkDeps.suggested_migration_order || []).join(' → ');
-      orderEl.textContent = order ? `Suggested load order: ${order}` : '';
-    }
   } catch (err) {
     panel.classList.remove('hidden');
-    listEl.className = 'job-fk-list empty-state';
-    listEl.textContent = err.message || 'Could not resolve FK dependencies.';
+    const listEl = $('#job-fk-list');
+    if (listEl) {
+      listEl.className = 'job-fk-list empty-state';
+      listEl.textContent = err.message || 'Could not resolve FK dependencies.';
+    }
   }
 }
 
-function renderJobFkDeps() {
-  const listEl = $('#job-fk-list');
-  if (!listEl || !jobFkDeps) return;
-  const deps = jobFkDeps.dependencies || [];
-  if (!deps.length) {
-    listEl.className = 'job-fk-list empty-state';
-    listEl.textContent = 'No additional parent tables required by foreign keys.';
+async function discoverJobRelationships(btn) {
+  const sourceId = $('#job-source')?.value;
+  const selected = [...jobSelectedTables];
+  if (!sourceId || !selected.length) {
+    showToast('Select at least one table first', 'error');
     return;
   }
-  listEl.className = 'job-fk-list';
-  listEl.innerHTML = deps.map(d => {
+  await withBtn(btn, async () => {
+    jobDiscoverDeps = await api('/explore/discover-table-relationships', {
+      method: 'POST',
+      body: JSON.stringify({ connection_id: sourceId, tables: selected }),
+    });
+    jobFkDeps = jobDiscoverDeps.declared || jobFkDeps;
+    renderJobRelationshipPanel();
+    $('#job-fk-panel')?.classList.remove('hidden');
+  }, { pending: 'Discovering…', success: 'Discovered', toast: 'Relationship suggestions updated' });
+}
+
+function fkHintForDep(key, edges) {
+  return (edges || []).filter(e =>
+    `${e.child_schema}.${e.child_table}`.toUpperCase() === key.split('.').slice(-1)[0] ||
+    `${e.parent_schema}.${e.parent_table}`.toUpperCase() === key.split('.').pop()
+  ).slice(0, 1).map(e =>
+    `${e.child_schema}.${e.child_table}.${e.child_column} → ${e.parent_schema}.${e.parent_table}.${e.parent_column}`
+  ).join('; ');
+}
+
+function renderJobDepRows(deps, edges, inferred) {
+  return (deps || []).map(d => {
     const key = jobTableKey(d);
     const checked = jobSelectedTables.has(key) ? 'checked' : '';
     const depthClass = d.depth > 1 ? ` depth-${Math.min(d.depth, 4)}` : '';
     const req = (d.required_by || []).map(esc).join(', ');
-    const edges = (jobFkDeps.edges || []).filter(e =>
-      `${e.child_schema}.${e.child_table}`.toUpperCase() === key.toUpperCase() ||
-      `${e.parent_schema}.${e.parent_table}`.toUpperCase() === key.toUpperCase()
-    );
-    const fkHint = edges.slice(0, 2).map(e =>
-      `${e.child_schema}.${e.child_table}.${e.child_column} → ${e.parent_schema}.${e.parent_table}.${e.parent_column}`
-    ).join('; ');
-    const id = jobTableDomId('jf-', key);
+    const badge = inferred
+      ? `<span class="badge pending">suggested</span>`
+      : `<span class="badge completed">FK</span>`;
+    const hint = d.match_reason ? esc(d.match_reason) : fkHintForDep(key, edges);
+    const id = jobTableDomId(inferred ? 'ji-' : 'jf-', key);
+    const attr = inferred ? 'data-job-fk-inferred' : 'data-job-fk';
     return `<div class="job-fk-row${depthClass}">
-      <input type="checkbox" id="${id}" data-job-fk="${esc(key)}" ${checked}>
+      <input type="checkbox" id="${id}" ${attr}="${esc(key)}" ${checked}>
       <label for="${id}">
-        <strong>${esc(key)}</strong> <span class="badge pending">depth ${d.depth}</span>
-        <span class="job-fk-meta">Required by: ${req || '—'}${fkHint ? ` · ${esc(fkHint)}` : ''}</span>
+        <strong>${esc(key)}</strong> ${badge}${!inferred && d.depth ? ` <span class="badge pending">depth ${d.depth}</span>` : ''}
+        <span class="job-fk-meta">${inferred ? '' : `Required by: ${req || '—'} · `}${hint || ''}</span>
       </label>
     </div>`;
   }).join('');
-  listEl.querySelectorAll('[data-job-fk]').forEach(cb => {
-    cb.addEventListener('change', () => onJobTableToggle(cb.dataset.jobFk, cb.checked));
+}
+
+function updateJobFkDiscoverUI(declaredEdges) {
+  const hasDeclaredFK = (declaredEdges || []).length > 0;
+  const discoverBtn = $('#job-fk-discover');
+  const fkNote = $('#job-fk-note');
+  if (discoverBtn) discoverBtn.classList.toggle('hidden', hasDeclaredFK);
+  if (fkNote) {
+    fkNote.textContent = hasDeclaredFK
+      ? 'Parent tables required by Oracle foreign key constraints.'
+      : 'No declared foreign keys for this selection. Use Discover to suggest parents from matching column names.';
+  }
+}
+
+function renderJobRelationshipPanel() {
+  const listEl = $('#job-fk-list');
+  const orderEl = $('#job-fk-order');
+  if (!listEl) return;
+
+  const declaredDeps = jobDiscoverDeps?.declared?.dependencies ?? jobFkDeps?.dependencies ?? [];
+  const declaredEdges = jobDiscoverDeps?.declared?.edges ?? jobFkDeps?.edges ?? [];
+  const inferredDeps = (jobDiscoverDeps?.suggested?.dependencies ?? []).filter(d => d.inferred);
+  const inferredEdges = jobDiscoverDeps?.inferred ?? [];
+
+  let html = '';
+  if (declaredDeps.length) {
+    html += '<div class="job-fk-section"><strong>Declared foreign keys</strong></div>';
+    html += renderJobDepRows(declaredDeps, declaredEdges, false);
+  }
+  if (inferredDeps.length) {
+    if (html) html += '<div class="job-fk-section-gap"></div>';
+    html += '<div class="job-fk-section"><strong>Suggested from column names</strong></div>';
+    html += renderJobDepRows(inferredDeps, inferredEdges, true);
+  } else if (jobDiscoverDeps && !inferredDeps.length && !declaredDeps.length) {
+    html = '';
+  }
+
+  if (!html && !declaredDeps.length && !inferredDeps.length) {
+    listEl.className = 'job-fk-list empty-state';
+    listEl.textContent = jobDiscoverDeps
+      ? 'No relationships found — declared or inferred.'
+      : 'No declared foreign keys found. Click Discover relationship tables to match column names.';
+    if (orderEl) orderEl.textContent = '';
+    updateJobFkDiscoverUI(declaredEdges);
+    return;
+  }
+
+  if (!html && declaredDeps.length === 0 && jobDiscoverDeps?.inferred?.length) {
+    html += '<div class="job-fk-section"><strong>Suggested from column names</strong></div>';
+    html += (jobDiscoverDeps.inferred || []).map(e => {
+      const parentKey = `${e.parent_schema}.${e.parent_table}`.toUpperCase();
+      const checked = jobSelectedTables.has(parentKey) ? 'checked' : '';
+      const id = jobTableDomId('je-', parentKey + e.child_column);
+      return `<div class="job-fk-row">
+        <input type="checkbox" id="${id}" data-job-fk-inferred="${esc(parentKey)}" ${checked}>
+        <label for="${id}">
+          <strong>${esc(parentKey)}</strong> <span class="badge pending">suggested · ${esc(e.confidence || 'medium')}</span>
+          <span class="job-fk-meta">${esc(e.child_schema)}.${esc(e.child_table)}.${esc(e.child_column)} → ${esc(e.parent_schema)}.${esc(e.parent_table)}.${esc(e.parent_column)} · ${esc(e.reason)}</span>
+        </label>
+      </div>`;
+    }).join('');
+  }
+
+  listEl.className = 'job-fk-list';
+  listEl.innerHTML = html;
+  listEl.querySelectorAll('[data-job-fk], [data-job-fk-inferred]').forEach(cb => {
+    cb.addEventListener('change', () => onJobTableToggle(cb.dataset.jobFk || cb.dataset.jobFkInferred, cb.checked));
   });
   renderJobTableList();
+
+  const order = (jobDiscoverDeps?.suggested_migration_order || jobFkDeps?.suggested_migration_order || []).join(' → ');
+  if (orderEl) orderEl.textContent = order ? `Suggested load order: ${order}` : '';
+  updateJobFkDiscoverUI(declaredEdges);
 }
 
 function includeAllJobFkDeps() {
-  if (!jobFkDeps) return;
-  for (const d of jobFkDeps.dependencies || []) {
+  const deps = jobDiscoverDeps?.suggested?.dependencies ?? jobFkDeps?.dependencies ?? [];
+  for (const d of deps) {
     jobSelectedTables.add(jobTableKey(d));
+  }
+  if (jobDiscoverDeps?.inferred) {
+    for (const e of jobDiscoverDeps.inferred) {
+      jobSelectedTables.add(`${e.parent_schema}.${e.parent_table}`.toUpperCase());
+    }
   }
   updateJobTableFilterInput();
   renderJobTableList();
@@ -687,6 +778,7 @@ $('#job-table-clear')?.addEventListener('click', async () => {
   await refreshJobFkDeps();
 });
 $('#job-table-search')?.addEventListener('input', () => renderJobTableList());
+$('#job-fk-discover')?.addEventListener('click', (e) => discoverJobRelationships(e.currentTarget));
 $('#job-fk-include-all')?.addEventListener('click', () => includeAllJobFkDeps());
 
 function titleCase(s) {

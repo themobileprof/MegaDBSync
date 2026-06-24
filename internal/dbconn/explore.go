@@ -298,3 +298,21 @@ func TableFKDependencies(ctx context.Context, c store.Connection, password strin
 	selected := ParseTableSelection(owner, tableNames)
 	return OracleTableDependencies(ctx, db, owner, selected)
 }
+
+// DiscoverTableRelationships infers column-name links when FK constraints are missing.
+func DiscoverTableRelationships(ctx context.Context, c store.Connection, password string, tableNames []string) (DiscoverTableRelationshipsResult, error) {
+	if c.Type != store.ConnOracle {
+		return DiscoverTableRelationshipsResult{}, fmt.Errorf("relationship discovery requires an Oracle source connection")
+	}
+	owner := strings.ToUpper(strings.TrimSpace(c.Schema))
+	if owner == "" {
+		return DiscoverTableRelationshipsResult{}, fmt.Errorf("Oracle schema (owner) is required on the connection")
+	}
+	db, err := OpenOracle(ctx, c, password)
+	if err != nil {
+		return DiscoverTableRelationshipsResult{}, err
+	}
+	defer db.Close()
+	selected := ParseTableSelection(owner, tableNames)
+	return DiscoverOracleTableRelationships(ctx, db, owner, selected)
+}

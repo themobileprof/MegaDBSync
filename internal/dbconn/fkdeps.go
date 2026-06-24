@@ -28,9 +28,11 @@ type TableRef struct {
 // TableDependency is a parent table required by FK references from selected or child tables.
 type TableDependency struct {
 	TableRef
-	Depth      int      `json:"depth"`
-	RequiredBy []string `json:"required_by"`
-	Selected   bool     `json:"selected"`
+	Depth       int      `json:"depth"`
+	RequiredBy  []string `json:"required_by"`
+	Selected    bool     `json:"selected"`
+	Inferred    bool     `json:"inferred,omitempty"`
+	MatchReason string   `json:"match_reason,omitempty"`
 }
 
 // TableDependencyResult is the transitive FK parent closure for a table selection.
@@ -43,6 +45,63 @@ type TableDependencyResult struct {
 
 func tableKey(schema, name string) string {
 	return strings.ToUpper(strings.TrimSpace(schema)) + "." + strings.ToUpper(strings.TrimSpace(name))
+}
+
+// columnTypes maps TABLE -> COLUMN -> metadata (uppercase names).
+type columnTypes map[string]map[string]ColumnMeta
+
+func loadOracleColumnTypes(ctx context.Context, db *sql.DB, owner string) (columnTypes, error) {
+	owner = strings.ToUpper(strings.TrimSpace(owner))
+	out := make(columnTypes)
+	rows, err := db.QueryContext(ctx, `
+SELECT table_name, column_name, data_type, char_length, data_length, char_used, data_precision, data_scale
+FROM all_tab_columns
+WHERE owner = :1
+ORDER BY table_name, column_id`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var table, col, dataType string
+		var charUsed sql.NullString
+		var charLen, dataLen, prec, scale sql.NullInt64
+		if err := rows.Scan(&table, &col, &dataType, &charLen, &dataLen, &charUsed, &prec, &scale); err != nil {
+			return nil, err
+		}
+		table = strings.ToUpper(table)
+		col = strings.ToUpper(col)
+		meta := ColumnMeta{Name: col, DataType: dataType}
+		if charLen.Valid {
+			meta.CharMaxLen = &charLen.Int64
+		}
+		if dataLen.Valid {
+			meta.DataLength = &dataLen.Int64
+		}
+		if charUsed.Valid {
+			meta.CharUsed = charUsed.String
+		}
+		if prec.Valid {
+			meta.NumericPrec = &prec.Int64
+		}
+		if scale.Valid {
+			meta.NumericScale = &scale.Int64
+		}
+		if out[table] == nil {
+			out[table] = make(map[string]ColumnMeta)
+		}
+		out[table][col] = meta
+	}
+	return out, rows.Err()
+}
+
+func (ct columnTypes) get(table, col string) (ColumnMeta, bool) {
+	cols, ok := ct[strings.ToUpper(table)]
+	if !ok {
+		return ColumnMeta{}, false
+	}
+	c, ok := cols[strings.ToUpper(col)]
+	return c, ok
 }
 
 // ListOracleFKEdges returns FK column links visible for an Oracle owner.

@@ -88,6 +88,39 @@ func mapOracleNumber(c ColumnMeta) string {
 	return fmt.Sprintf("DECIMAL(%d,%d)", prec, scale)
 }
 
+// IsIntegerOracleColumn reports whether a column stores whole numbers (eligible as an integer FK).
+func IsIntegerOracleColumn(c ColumnMeta) bool {
+	dt := strings.ToUpper(strings.TrimSpace(c.DataType))
+	switch {
+	case dt == "INTEGER" || dt == "INT" || dt == "SMALLINT":
+		return true
+	case strings.Contains(dt, "NUMBER"):
+		_, scale, ok := oracleNumberPrecScale(c)
+		if !ok {
+			return true // unconstrained NUMBER — common for ID columns
+		}
+		return scale == 0
+	default:
+		return false
+	}
+}
+
+// MaxShortStringPKLength is the max character length for inferred string-key FK suggestions.
+const MaxShortStringPKLength = 50
+
+// IsShortStringPKColumn reports whether a column is a bounded string suitable as a code/PK FK.
+func IsShortStringPKColumn(c ColumnMeta) bool {
+	dt := strings.ToUpper(strings.TrimSpace(c.DataType))
+	if strings.Contains(dt, "CLOB") || strings.Contains(dt, "BLOB") {
+		return false
+	}
+	if !(strings.Contains(dt, "VARCHAR") || strings.Contains(dt, "CHAR") || strings.Contains(dt, "NCHAR")) {
+		return false
+	}
+	n := charLength(c)
+	return n > 0 && n <= MaxShortStringPKLength
+}
+
 func oracleNumberPrecScale(c ColumnMeta) (prec, scale int, ok bool) {
 	if c.NumericPrec == nil && c.NumericScale == nil {
 		return 0, 0, false

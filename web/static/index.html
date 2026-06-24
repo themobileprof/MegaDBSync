@@ -217,11 +217,12 @@
               </div>
               <div id="job-table-list" class="job-table-list empty-state">Select an Oracle source to load tables.</div>
               <div id="job-fk-panel" class="job-fk-panel hidden">
-                <h4>Related parent tables (FK references)</h4>
-                <p class="muted note">Parent tables referenced by foreign keys in your selection. Adding a dependent table may reveal nested parents (depth 2+).</p>
+                <h4>Related parent tables</h4>
+                <p class="muted note" id="job-fk-note">Declared foreign keys appear when you select tables.</p>
                 <div id="job-fk-list" class="job-fk-list"></div>
                 <div class="job-fk-actions">
-                  <button class="btn primary" type="button" id="job-fk-include-all">Include all dependencies</button>
+                  <button class="btn primary hidden" type="button" id="job-fk-discover">Discover relationship tables</button>
+                  <button class="btn" type="button" id="job-fk-include-all">Include all dependencies</button>
                   <span id="job-fk-order" class="muted"></span>
                 </div>
               </div>
