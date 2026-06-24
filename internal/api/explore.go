@@ -210,6 +210,47 @@ func (s *Server) handleExploreMigrationReport(w http.ResponseWriter, r *http.Req
 	writeJSON(w, report)
 }
 
+type tableDependenciesRequest struct {
+	ConnectionID string   `json:"connection_id"`
+	Tables       []string `json:"tables"`
+}
+
+func (s *Server) handleExploreTableDependencies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErrorJSON(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tableDependenciesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.ConnectionID == "" {
+		writeErrorJSON(w, "connection_id is required", http.StatusBadRequest)
+		return
+	}
+	c, err := s.Store.GetConnection(req.ConnectionID)
+	if err != nil {
+		writeErrorJSON(w, "invalid connection", http.StatusBadRequest)
+		return
+	}
+	if c.Type != store.ConnOracle {
+		writeErrorJSON(w, "table dependencies require an Oracle source connection", http.StatusBadRequest)
+		return
+	}
+	pass, err := s.Store.ConnectionPassword(req.ConnectionID)
+	if err != nil {
+		writeErrorJSON(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	result, err := dbconn.TableFKDependencies(r.Context(), c, pass, req.Tables)
+	if err != nil {
+		writeErrorJSON(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, result)
+}
+
 func (s *Server) resolveExploreConn(r *http.Request) (store.Connection, string, error) {
 	var req exploreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

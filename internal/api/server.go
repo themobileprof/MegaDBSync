@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/explore/sample", s.handleExploreSample)
 	protected.HandleFunc("/explore/schema", s.handleExploreSchema)
 	protected.HandleFunc("/explore/migration-report", s.handleExploreMigrationReport)
+	protected.HandleFunc("/explore/table-dependencies", s.handleExploreTableDependencies)
 	mux.Handle("/api/", http.StripPrefix("/api", s.Auth.Middleware(protected)))
 	return mux
 }

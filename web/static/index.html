@@ -206,7 +206,27 @@
             <label>Max rows per table<input name="max_rows_per_table" type="number" min="0" step="1" placeholder="0 = unlimited" title="Cap rows copied per table"></label>
             </div>
             <label>Parallel tables<input name="parallel_tables" type="number" min="1" max="8" placeholder="2"></label>
-            <label>Table filter (optional)<input name="table_filter" placeholder="SCHEMA.TABLE or TABLE, comma-separated"></label>
+            <div id="job-table-picker" class="span-all job-table-picker">
+              <label>Tables to migrate</label>
+              <p class="muted note">Leave all unchecked to migrate every table in the Oracle schema. Select tables to limit scope — FK parent tables are suggested below.</p>
+              <div class="job-table-toolbar">
+                <input type="search" id="job-table-search" placeholder="Search tables…" aria-label="Search tables">
+                <button class="btn" type="button" id="job-table-reload">Reload tables</button>
+                <button class="btn" type="button" id="job-table-select-all">Select all</button>
+                <button class="btn" type="button" id="job-table-clear">Clear</button>
+              </div>
+              <div id="job-table-list" class="job-table-list empty-state">Select an Oracle source to load tables.</div>
+              <div id="job-fk-panel" class="job-fk-panel hidden">
+                <h4>Related parent tables (FK references)</h4>
+                <p class="muted note">Parent tables referenced by foreign keys in your selection. Adding a dependent table may reveal nested parents (depth 2+).</p>
+                <div id="job-fk-list" class="job-fk-list"></div>
+                <div class="job-fk-actions">
+                  <button class="btn primary" type="button" id="job-fk-include-all">Include all dependencies</button>
+                  <span id="job-fk-order" class="muted"></span>
+                </div>
+              </div>
+              <input type="hidden" name="table_filter" id="job-table-filter" value="">
+            </div>
             <div id="date-range-fields" class="form-grid span-all hidden">
               <label>Date from (optional)<input name="date_from" type="date" title="YYYY-MM-DD — leave empty for no lower bound"></label>
               <label>Date to (optional)<input name="date_to" type="date" title="YYYY-MM-DD — leave empty for no upper bound"></label>

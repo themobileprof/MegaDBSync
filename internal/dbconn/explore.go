@@ -280,3 +280,21 @@ func SchemaDDL(c store.Connection, schema, table string, cols []ExploreColumn) s
 	}
 	return b.String()
 }
+
+// TableFKDependencies resolves Oracle FK parent tables for a selection.
+func TableFKDependencies(ctx context.Context, c store.Connection, password string, tableNames []string) (TableDependencyResult, error) {
+	if c.Type != store.ConnOracle {
+		return TableDependencyResult{}, fmt.Errorf("FK dependencies are only available for Oracle sources")
+	}
+	owner := strings.ToUpper(strings.TrimSpace(c.Schema))
+	if owner == "" {
+		return TableDependencyResult{}, fmt.Errorf("Oracle schema (owner) is required on the connection")
+	}
+	db, err := OpenOracle(ctx, c, password)
+	if err != nil {
+		return TableDependencyResult{}, err
+	}
+	defer db.Close()
+	selected := ParseTableSelection(owner, tableNames)
+	return OracleTableDependencies(ctx, db, owner, selected)
+}

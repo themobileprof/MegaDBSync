@@ -510,7 +510,184 @@ function fillJobSelects(list) {
   fill($('#job-dest'), mssql, 'Add a SQL Server destination first');
   fill($('#schedule-source'), oracle, 'None');
   fill($('#schedule-dest'), mssql, 'None');
+  loadJobTables().catch(() => {});
 }
+
+let jobOracleTables = [];
+let jobSelectedTables = new Set();
+let jobFkDeps = null;
+
+function jobTableKey(t) {
+  return `${(t.schema || '').toUpperCase()}.${(t.name || '').toUpperCase()}`;
+}
+
+function jobTableDomId(prefix, key) {
+  return prefix + key.replace(/[^A-Za-z0-9]+/g, '_');
+}
+
+function updateJobTableFilterInput() {
+  const el = $('#job-table-filter');
+  if (!el) return;
+  if (jobSelectedTables.size === 0) {
+    el.value = '';
+    return;
+  }
+  el.value = [...jobSelectedTables].sort().join(', ');
+}
+
+async function loadJobTables() {
+  const sourceId = $('#job-source')?.value;
+  const listEl = $('#job-table-list');
+  if (!listEl) return;
+  jobOracleTables = [];
+  jobSelectedTables.clear();
+  jobFkDeps = null;
+  updateJobTableFilterInput();
+  $('#job-fk-panel')?.classList.add('hidden');
+  if (!sourceId) {
+    listEl.className = 'job-table-list empty-state';
+    listEl.textContent = 'Select an Oracle source to load tables.';
+    return;
+  }
+  listEl.className = 'job-table-list empty-state';
+  listEl.textContent = 'Loading tables…';
+  try {
+    const res = await api('/explore/tables', { method: 'POST', body: JSON.stringify({ connection_id: sourceId }) });
+    jobOracleTables = (res.tables || []).slice().sort((a, b) => jobTableKey(a).localeCompare(jobTableKey(b)));
+    renderJobTableList();
+  } catch (err) {
+    listEl.className = 'job-table-list empty-state';
+    listEl.textContent = err.message || 'Failed to load tables.';
+  }
+}
+
+function renderJobTableList() {
+  const listEl = $('#job-table-list');
+  const q = ($('#job-table-search')?.value || '').trim().toUpperCase();
+  const filtered = jobOracleTables.filter(t => !q || jobTableKey(t).includes(q));
+  if (!jobOracleTables.length) {
+    listEl.className = 'job-table-list empty-state';
+    listEl.textContent = 'No tables found in this schema.';
+    return;
+  }
+  if (!filtered.length) {
+    listEl.className = 'job-table-list empty-state';
+    listEl.textContent = 'No tables match your search.';
+    return;
+  }
+  listEl.className = 'job-table-list';
+  listEl.innerHTML = filtered.map(t => {
+    const key = jobTableKey(t);
+    const checked = jobSelectedTables.has(key) ? 'checked' : '';
+    const rows = t.num_rows_known ? fmtNum(t.num_rows) + (t.num_rows_exceeded ? '+' : '') + ' rows' : 'row count unknown';
+    const id = jobTableDomId('jt-', key);
+    return `<div class="job-table-row"><input type="checkbox" id="${id}" data-job-table="${esc(key)}" ${checked}><label for="${id}"><strong>${esc(key)}</strong><span class="job-fk-meta">${rows}</span></label></div>`;
+  }).join('');
+  listEl.querySelectorAll('[data-job-table]').forEach(cb => {
+    cb.addEventListener('change', () => onJobTableToggle(cb.dataset.jobTable, cb.checked));
+  });
+}
+
+async function onJobTableToggle(key, checked) {
+  if (checked) jobSelectedTables.add(key);
+  else jobSelectedTables.delete(key);
+  updateJobTableFilterInput();
+  await refreshJobFkDeps();
+}
+
+async function refreshJobFkDeps() {
+  const panel = $('#job-fk-panel');
+  const listEl = $('#job-fk-list');
+  const orderEl = $('#job-fk-order');
+  const sourceId = $('#job-source')?.value;
+  const selected = [...jobSelectedTables];
+  if (!panel || !listEl) return;
+  if (!sourceId || selected.length === 0) {
+    panel.classList.add('hidden');
+    jobFkDeps = null;
+    return;
+  }
+  try {
+    jobFkDeps = await api('/explore/table-dependencies', {
+      method: 'POST',
+      body: JSON.stringify({ connection_id: sourceId, tables: selected }),
+    });
+    renderJobFkDeps();
+    panel.classList.remove('hidden');
+    if (orderEl) {
+      const order = (jobFkDeps.suggested_migration_order || []).join(' → ');
+      orderEl.textContent = order ? `Suggested load order: ${order}` : '';
+    }
+  } catch (err) {
+    panel.classList.remove('hidden');
+    listEl.className = 'job-fk-list empty-state';
+    listEl.textContent = err.message || 'Could not resolve FK dependencies.';
+  }
+}
+
+function renderJobFkDeps() {
+  const listEl = $('#job-fk-list');
+  if (!listEl || !jobFkDeps) return;
+  const deps = jobFkDeps.dependencies || [];
+  if (!deps.length) {
+    listEl.className = 'job-fk-list empty-state';
+    listEl.textContent = 'No additional parent tables required by foreign keys.';
+    return;
+  }
+  listEl.className = 'job-fk-list';
+  listEl.innerHTML = deps.map(d => {
+    const key = jobTableKey(d);
+    const checked = jobSelectedTables.has(key) ? 'checked' : '';
+    const depthClass = d.depth > 1 ? ` depth-${Math.min(d.depth, 4)}` : '';
+    const req = (d.required_by || []).map(esc).join(', ');
+    const edges = (jobFkDeps.edges || []).filter(e =>
+      `${e.child_schema}.${e.child_table}`.toUpperCase() === key.toUpperCase() ||
+      `${e.parent_schema}.${e.parent_table}`.toUpperCase() === key.toUpperCase()
+    );
+    const fkHint = edges.slice(0, 2).map(e =>
+      `${e.child_schema}.${e.child_table}.${e.child_column} → ${e.parent_schema}.${e.parent_table}.${e.parent_column}`
+    ).join('; ');
+    const id = jobTableDomId('jf-', key);
+    return `<div class="job-fk-row${depthClass}">
+      <input type="checkbox" id="${id}" data-job-fk="${esc(key)}" ${checked}>
+      <label for="${id}">
+        <strong>${esc(key)}</strong> <span class="badge pending">depth ${d.depth}</span>
+        <span class="job-fk-meta">Required by: ${req || '—'}${fkHint ? ` · ${esc(fkHint)}` : ''}</span>
+      </label>
+    </div>`;
+  }).join('');
+  listEl.querySelectorAll('[data-job-fk]').forEach(cb => {
+    cb.addEventListener('change', () => onJobTableToggle(cb.dataset.jobFk, cb.checked));
+  });
+  renderJobTableList();
+}
+
+function includeAllJobFkDeps() {
+  if (!jobFkDeps) return;
+  for (const d of jobFkDeps.dependencies || []) {
+    jobSelectedTables.add(jobTableKey(d));
+  }
+  updateJobTableFilterInput();
+  renderJobTableList();
+  refreshJobFkDeps();
+}
+
+$('#job-source')?.addEventListener('change', () => loadJobTables());
+$('#job-table-reload')?.addEventListener('click', () => withBtn($('#job-table-reload'), () => loadJobTables(), { toast: false }));
+$('#job-table-select-all')?.addEventListener('click', async () => {
+  jobOracleTables.forEach(t => jobSelectedTables.add(jobTableKey(t)));
+  updateJobTableFilterInput();
+  renderJobTableList();
+  await refreshJobFkDeps();
+});
+$('#job-table-clear')?.addEventListener('click', async () => {
+  jobSelectedTables.clear();
+  updateJobTableFilterInput();
+  renderJobTableList();
+  await refreshJobFkDeps();
+});
+$('#job-table-search')?.addEventListener('input', () => renderJobTableList());
+$('#job-fk-include-all')?.addEventListener('click', () => includeAllJobFkDeps());
 
 function titleCase(s) {
   return (s || '').replace(/\b\w/g, c => c.toUpperCase());

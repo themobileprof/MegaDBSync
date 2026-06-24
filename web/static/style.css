@@ -274,6 +274,49 @@ body {
   color: var(--accent-2);
   margin: 0 0.15rem;
 }
+.job-table-picker label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+.job-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+  align-items: center;
+}
+.job-table-toolbar input[type=search] {
+  flex: 1 1 180px;
+  min-width: 140px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.job-table-list, .job-fk-list {
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem;
+  background: rgba(255,255,255,0.02);
+}
+.job-table-row, .job-fk-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  padding: 0.25rem 0.15rem;
+}
+.job-table-row label, .job-fk-row label { cursor: pointer; flex: 1; }
+.job-fk-row.depth-2 { padding-left: 1rem; }
+.job-fk-row.depth-3 { padding-left: 2rem; }
+.job-fk-row.depth-4 { padding-left: 3rem; }
+.job-fk-panel { margin-top: 0.75rem; }
+.job-fk-panel h4 { margin: 0 0 0.35rem; font-size: 0.95rem; }
+.job-fk-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 0.55rem; }
+.job-fk-meta { font-size: 0.8rem; color: var(--muted); display: block; margin-top: 0.1rem; }
 .task-item.running { border-color: rgba(79, 140, 255, 0.45); }
 .task-meta { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.88rem; }
 .badge {
