@@ -5,6 +5,7 @@ let authed = false;
 let eventSource = null;
 let exploreSelected = null;
 let exploreConnections = [];
+let connectionById = {};
 let activeJobId = null;
 
 async function api(path, opts = {}) {
@@ -176,6 +177,32 @@ function fmtRelative(ts) {
   return fmtTime(ts);
 }
 
+function indexConnections(list) {
+  connectionById = Object.fromEntries((list || []).map(c => [c.id, c]));
+}
+
+function fmtMigrationEndpoint(c, kind) {
+  if (!c) {
+    return kind === 'oracle' ? 'Oracle (connection removed)' : 'SQL Server (connection removed)';
+  }
+  const parts = [c.name];
+  if (c.windows_auth) {
+    parts.push('Windows auth');
+  } else if (c.username) {
+    parts.push(c.username);
+  }
+  if (c.database) parts.push(c.database);
+  if (c.schema) parts.push('schema ' + c.schema);
+  else if (kind === 'mssql') parts.push('schema dbo');
+  return esc(parts.join(' · '));
+}
+
+function fmtJobMigrationAccounts(job) {
+  const src = connectionById[job.source_id];
+  const dst = connectionById[job.dest_id];
+  return `<div class="job-route"><strong>From</strong> ${fmtMigrationEndpoint(src, 'oracle')} <strong class="job-route-arrow">→</strong> <strong>To</strong> ${fmtMigrationEndpoint(dst, 'mssql')}</div>`;
+}
+
 function fmtScheduleLastJob(job) {
   if (!job) return 'none yet';
   const when = job.completed_at || job.started_at || job.created_at;
@@ -309,6 +336,8 @@ function renderDashboard(data) {
   } else {
     card.classList.remove('hidden');
     const paused = job.status === 'paused' || job.status === 'failed';
+    const accountsEl = $('#job-accounts');
+    if (accountsEl) accountsEl.innerHTML = fmtJobMigrationAccounts(job);
     $('#status-headline').textContent = job.status === 'running'
       ? (job.type === 'incremental_sync' ? 'Incremental sync running'
         : job.type === 'schema_sample' ? 'Schema sample running'
@@ -400,6 +429,7 @@ function renderDashboard(data) {
   }
 
   if (Array.isArray(data.connections)) {
+    indexConnections(data.connections);
     renderConnections(data.connections);
     fillJobSelects(data.connections);
     fillExploreSelects(data.connections);
@@ -409,6 +439,7 @@ function renderDashboard(data) {
 
 async function loadConnections() {
   const list = await api('/connections');
+  indexConnections(list);
   renderConnections(list);
   fillJobSelects(list);
   fillExploreSelects(list);
@@ -458,6 +489,7 @@ function renderJobs(list) {
         <span class="badge ${j.status}">${j.status}</span>
         ${j.status === 'paused' || j.status === 'failed' ? `<button class="btn primary" type="button" data-resume="${j.id}" style="margin-left:auto">Resume</button>` : ''}
       </div>
+      ${fmtJobMigrationAccounts(j)}
       <div class="muted">${fmtNum(j.rows_done)} rows · ${j.tables_done}/${j.tables_total} tables · ${fmtTime(j.created_at)}${j.type === 'incremental_sync' && j.status === 'completed' && j.rows_done === 0 ? ' · no changes' : ''}</div>
       ${j.error_message ? `<div class="error">${esc(j.error_message)}</div>` : ''}
     </div>`).join('');
