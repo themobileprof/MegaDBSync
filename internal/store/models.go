@@ -109,6 +109,7 @@ type AppSettings struct {
 	MssqlEncrypt               bool  `json:"mssql_encrypt"`
 	MssqlTrustServerCert       bool  `json:"mssql_trust_server_cert"`
 	EngineEnabled              bool  `json:"engine_enabled"`
+	AutoStartEngine            bool  `json:"auto_start_engine"`
 }
 
 type InsertFailureRecord struct {

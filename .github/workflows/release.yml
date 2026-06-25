@@ -25,13 +25,18 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Build binary
+      - name: Build binaries
         env:
           CGO_ENABLED: "0"
-        run: go build -trimpath -ldflags="-s -w" -o dist\megadbsync.exe .\cmd\megadbsync
+        run: |
+          $version = "${{ github.ref_name }}"
+          go build -trimpath -ldflags="-s -w" -o dist\megadbsync.exe .\cmd\megadbsync
+          go build -trimpath -ldflags="-s -w -X main.setupVersion=$version" -o dist\megadbsync-setup.exe .\cmd\megadbsync-setup
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/megadbsync.exe
+          files: |
+            dist/megadbsync.exe
+            dist/megadbsync-setup.exe
           generate_release_notes: true

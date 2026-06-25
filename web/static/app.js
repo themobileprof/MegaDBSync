@@ -1010,6 +1010,7 @@ async function loadSettingsForm() {
   }
   if (s.schedule_source_id) form.schedule_source_id.value = s.schedule_source_id;
   if (s.schedule_dest_id) form.schedule_dest_id.value = s.schedule_dest_id;
+  if (form.auto_start_engine) form.auto_start_engine.checked = !!s.auto_start_engine;
   const connForm = $('#connectivity-form');
   if (connForm) {
     connForm.default_connect_timeout_sec.value = s.default_connect_timeout_sec || 30;
@@ -1028,6 +1029,7 @@ $('#settings-form').addEventListener('submit', async (e) => {
     body.default_parallel = parseInt(body.default_parallel, 10);
     body.default_chunk_timeout_sec = parseInt(body.default_chunk_timeout_sec, 10);
     body.default_row_count_fallback_cap = parseInt(body.default_row_count_fallback_cap || '0', 10);
+    body.auto_start_engine = !!e.target.auto_start_engine?.checked;
     await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
   }, { pending: 'Saving…', success: 'Saved', toast: 'Settings saved' });
 });

@@ -761,6 +761,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"mssql_encrypt":                  st.MssqlEncrypt,
 			"mssql_trust_server_cert":        st.MssqlTrustServerCert,
 			"engine_enabled":                 st.EngineEnabled,
+			"auto_start_engine":              st.AutoStartEngine,
 			"has_password":                   st.AdminPasswordHash != "",
 		})
 	case http.MethodPut:

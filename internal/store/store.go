@@ -197,23 +197,34 @@ CREATE INDEX IF NOT EXISTS idx_insert_failures_job ON insert_failures(job_id, cr
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN default_connect_timeout_sec INTEGER NOT NULL DEFAULT 30`)
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mssql_encrypt INTEGER NOT NULL DEFAULT 1`)
 	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mssql_trust_server_cert INTEGER NOT NULL DEFAULT 1`)
+	_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN auto_start_engine INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
 func (s *Store) GetSettings() (AppSettings, error) {
 	var st AppSettings
-	var engine, mssqlEnc, mssqlTrust int
-	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, default_chunk_timeout_sec, default_row_count_fallback_cap, default_connect_timeout_sec, mssql_encrypt, mssql_trust_server_cert, engine_enabled FROM settings WHERE id = 1`).
-		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &st.DefaultChunkTimeoutSec, &st.DefaultRowCountFallbackCap, &st.DefaultConnectTimeoutSec, &mssqlEnc, &mssqlTrust, &engine)
+	var engine, mssqlEnc, mssqlTrust, autoStart int
+	err := s.db.QueryRow(`SELECT admin_password_hash, schedule_cron, schedule_source_id, schedule_dest_id, default_batch_size, default_parallel, default_chunk_timeout_sec, default_row_count_fallback_cap, default_connect_timeout_sec, mssql_encrypt, mssql_trust_server_cert, engine_enabled, auto_start_engine FROM settings WHERE id = 1`).
+		Scan(&st.AdminPasswordHash, &st.ScheduleCron, &st.ScheduleSourceID, &st.ScheduleDestID, &st.DefaultBatchSize, &st.DefaultParallel, &st.DefaultChunkTimeoutSec, &st.DefaultRowCountFallbackCap, &st.DefaultConnectTimeoutSec, &mssqlEnc, &mssqlTrust, &engine, &autoStart)
 	st.MssqlEncrypt = mssqlEnc == 1
 	st.MssqlTrustServerCert = mssqlTrust == 1
 	st.EngineEnabled = engine == 1
+	st.AutoStartEngine = autoStart == 1
 	return st, err
 }
 
 func (s *Store) UpdateSettings(st AppSettings) error {
-	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=?, default_chunk_timeout_sec=?, default_row_count_fallback_cap=?, default_connect_timeout_sec=?, mssql_encrypt=?, mssql_trust_server_cert=? WHERE id=1`,
-		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel, st.DefaultChunkTimeoutSec, st.DefaultRowCountFallbackCap, st.DefaultConnectTimeoutSec, boolInt(st.MssqlEncrypt), boolInt(st.MssqlTrustServerCert))
+	_, err := s.db.Exec(`UPDATE settings SET schedule_cron=?, schedule_source_id=?, schedule_dest_id=?, default_batch_size=?, default_parallel=?, default_chunk_timeout_sec=?, default_row_count_fallback_cap=?, default_connect_timeout_sec=?, mssql_encrypt=?, mssql_trust_server_cert=?, auto_start_engine=? WHERE id=1`,
+		st.ScheduleCron, st.ScheduleSourceID, st.ScheduleDestID, st.DefaultBatchSize, st.DefaultParallel, st.DefaultChunkTimeoutSec, st.DefaultRowCountFallbackCap, st.DefaultConnectTimeoutSec, boolInt(st.MssqlEncrypt), boolInt(st.MssqlTrustServerCert), boolInt(st.AutoStartEngine))
+	return err
+}
+
+func (s *Store) SetAutoStartEngine(on bool) error {
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE settings SET auto_start_engine=? WHERE id=1`, v)
 	return err
 }
 

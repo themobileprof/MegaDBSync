@@ -345,6 +345,8 @@
             <label>Default parallel tables<input name="default_parallel" type="number" min="1" max="8"></label>
             <label>Default chunk timeout (sec)<input name="default_chunk_timeout_sec" type="number" min="30" step="30" title="Max seconds per batch before pause"></label>
             <label>Row-count fallback cap<input name="default_row_count_fallback_cap" type="number" min="0" step="100000" placeholder="0 = off" title="When Oracle NUM_ROWS stats are missing, count up to this many rows (0 = disabled)"></label>
+            <label class="checkbox"><input name="auto_start_engine" type="checkbox"> Auto-start migration engine when the app starts</label>
+            <p class="muted note">Required for scheduled incremental sync after a reboot. You can still stop the engine from the dashboard.</p>
             <button class="btn primary" type="submit">Save settings</button>
           </form>
         </div>

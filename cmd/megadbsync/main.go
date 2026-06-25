@@ -37,6 +37,7 @@ func main() {
 		log.Fatalf("settings: %v", err)
 	}
 	applyConnectOpts(settings)
+	applySetupPending(st, *dataDir, &settings)
 
 	authMgr := auth.NewManager()
 	authMgr.SetPasswordHash(settings.AdminPasswordHash)
@@ -59,7 +60,13 @@ func main() {
 
 	log.Printf("MegaDBSync listening on http://%s", *addr)
 	log.Printf("State directory: %s", *dataDir)
-	log.Printf("Open the URL above in your browser. The migration engine is stopped until you start it from the dashboard.")
+	if settings.EngineEnabled {
+		log.Printf("Migration engine is running (scheduled incremental sync can run).")
+	} else if settings.AutoStartEngine {
+		log.Printf("Migration engine is stopped. Enable auto-start in Settings or start from the dashboard.")
+	} else {
+		log.Printf("Open the URL above in your browser. The migration engine is stopped until you start it from the dashboard.")
+	}
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           mux,
@@ -77,6 +84,27 @@ func applyConnectOpts(st store.AppSettings) {
 	dbconn.SetDefaultConnectOpts(dbconn.ConnectOptsFromSettings(
 		st.DefaultConnectTimeoutSec, st.MssqlEncrypt, st.MssqlTrustServerCert,
 	))
+}
+
+func applySetupPending(st *store.Store, dataDir string, settings *store.AppSettings) {
+	pending, ok := platform.ReadSetupPending(dataDir)
+	if !ok {
+		if settings.AutoStartEngine && !settings.EngineEnabled {
+			if err := st.SetEngineEnabled(true); err == nil {
+				settings.EngineEnabled = true
+				log.Printf("Migration engine auto-started (Settings → auto-start engine).")
+			}
+		}
+		return
+	}
+	if pending.AutoStartEngine {
+		_ = st.SetAutoStartEngine(true)
+		_ = st.SetEngineEnabled(true)
+		settings.AutoStartEngine = true
+		settings.EngineEnabled = true
+		log.Printf("Migration engine auto-started (setup installer).")
+	}
+	platform.RemoveSetupPending(dataDir)
 }
 
 func init() {

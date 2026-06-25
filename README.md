@@ -27,13 +27,31 @@
 Permanent builds are on **[GitHub Releases](https://github.com/themobileprof/mdas/releases)** (tagged `v*`, e.g. `v1.0.0`).
 
 1. Open **Releases** → latest version (e.g. `v1.0.0`)
-2. Download **`megadbsync.exe`** from **Assets**
-3. On the server:
+2. Download one of:
+   - **`megadbsync-setup.exe`** — small installer; downloads `megadbsync.exe` into `C:\MegaDBSync` on first run (recommended for most users)
+   - **`megadbsync.exe`** — standalone app; copy anywhere and run
+3. **Setup** (recommended):
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\MegaDBSync
+.\megadbsync-setup.exe
+# Installs to C:\MegaDBSync, registers Windows uninstall, optional logon task.
+# Re-run the same file (or C:\MegaDBSync\MegaDBSync-Setup.exe) to upgrade or uninstall.
+
+.\megadbsync-setup.exe -uninstall
+.\megadbsync-setup.exe -upgrade
+.\megadbsync-setup.exe -start -autostart -auto-start-engine   # non-interactive
+```
+
+**Uninstall:** Settings → Apps → MegaDBSync, Start Menu → Uninstall MegaDBSync, or `MegaDBSync-Setup.exe -uninstall`.
+
+4. **Standalone** (manual path):
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\MegaDBSync\data
 # Copy megadbsync.exe into C:\MegaDBSync\
 Unblock-File -Path C:\MegaDBSync\megadbsync.exe
+cd C:\MegaDBSync
+.\megadbsync.exe -addr 127.0.0.1:8080 -data C:\MegaDBSync\data
 ```
 
 > Short-lived CI artifacts (30 days) are also on every `main` build; **Releases** are the long-term download.
