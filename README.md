@@ -24,7 +24,7 @@
 
 ## Download the release binary
 
-Permanent builds are on **[GitHub Releases](https://github.com/themobileprof/mdas/releases)** (tagged `v*`, e.g. `v1.0.0`).
+Permanent builds are on **[GitHub Releases](https://github.com/themobileprof/megadbsync/releases)** (tagged `v*`, e.g. `v1.0.0`).
 
 1. Open **Releases** → latest version (e.g. `v1.0.0`)
 2. Download one of:
@@ -76,8 +76,8 @@ Full detail (NSSM commands, firewall, SQL integrated auth, backup, troubleshooti
 ### Build from source (optional)
 
 ```powershell
-git clone https://github.com/themobileprof/mdas.git
-cd mdas
+git clone https://github.com/themobileprof/megadbsync.git
+cd megadbsync
 go mod tidy
 go build -trimpath -ldflags="-s -w" -o megadbsync.exe .\cmd\megadbsync
 ```

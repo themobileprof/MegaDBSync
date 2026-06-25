@@ -71,7 +71,7 @@ Use a dedicated domain account (e.g. `DOMAIN\svc-megadbsync`) rather than LocalS
 
 Tagged releases attach **`megadbsync.exe`** indefinitely (not subject to the 30-day artifact limit).
 
-1. Open **Releases**: `https://github.com/themobileprof/mdas/releases`
+1. Open **Releases**: `https://github.com/themobileprof/megadbsync/releases`
 2. Download **`megadbsync.exe`** from the latest release (e.g. `v1.0.0`)
 3. Copy to `C:\MegaDBSync\megadbsync.exe`
 
@@ -88,7 +88,7 @@ The **Release** workflow builds and uploads the binary automatically.
 
 Every push to `main` also uploads a build artifact retained **30 days**:
 
-1. Open `https://github.com/themobileprof/mdas` → **Actions**
+1. Open `https://github.com/themobileprof/megadbsync` → **Actions**
 2. Latest green **Build** run → **Artifacts** → **`megadbsync-windows-amd64`**
 3. Extract `megadbsync.exe`
 
@@ -111,8 +111,8 @@ C:\MegaDBSync\megadbsync.exe
 Requires **Go 1.22+** on a Windows machine:
 
 ```powershell
-git clone https://github.com/themobileprof/mdas.git
-cd mdas
+git clone https://github.com/themobileprof/megadbsync.git
+cd megadbsync
 go mod tidy
 go build -trimpath -ldflags="-s -w" -o megadbsync.exe .\cmd\megadbsync
 ```
@@ -136,7 +136,7 @@ Copy-Item .\megadbsync.exe C:\MegaDBSync\megadbsync.exe
 State directory resolution order:
 
 1. `-data` flag on command line
-2. `%MEGADBSYNC_DATA%` environment variable (legacy: `%MDAS_DATA%`)
+2. `%MEGADBSYNC_DATA%` environment variable
 3. `%ProgramData%\MegaDBSync`
 4. `%LOCALAPPDATA%\MegaDBSync`
 5. `data\` next to the executable

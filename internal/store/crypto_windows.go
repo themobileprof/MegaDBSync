@@ -25,6 +25,7 @@ func EncryptPassword(_ string, plain string) (string, error) {
 }
 
 func DecryptPassword(dataDir, encoded string) (string, error) {
+	_ = dataDir
 	if encoded == "" {
 		return "", nil
 	}
@@ -39,12 +40,7 @@ func DecryptPassword(dataDir, encoded string) (string, error) {
 		}
 		return string(plain), nil
 	}
-	// Migrate legacy AES-encrypted connection passwords on read.
-	plain, err := legacyDecryptPassword(dataDir, encoded)
-	if err != nil {
-		return "", err
-	}
-	return plain, nil
+	return "", fmt.Errorf("unsupported password format")
 }
 
 func dpapiProtect(data []byte) ([]byte, error) {

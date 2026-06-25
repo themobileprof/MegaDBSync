@@ -1,6 +1,5 @@
 # Binaries
 /megadbsync.exe
-/mdas.exe
 *.exe
 *.exe~
 /dist/

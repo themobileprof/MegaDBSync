@@ -74,8 +74,8 @@ func registerInstall(info installInfo, version, addr string) error {
 	_ = k.SetStringValue("InstallLocation", info.Dir)
 	_ = k.SetStringValue("UninstallString", uninstall)
 	_ = k.SetStringValue("DisplayIcon", info.ExePath)
-	_ = k.SetStringValue("HelpLink", "https://github.com/themobileprof/mdas")
-	_ = k.SetStringValue("URLInfoAbout", "https://github.com/themobileprof/mdas")
+	_ = k.SetStringValue("HelpLink", "https://github.com/themobileprof/megadbsync")
+	_ = k.SetStringValue("URLInfoAbout", "https://github.com/themobileprof/megadbsync")
 	_ = k.SetDWordValue("NoModify", 1)
 	_ = k.SetDWordValue("NoRepair", 1)
 	return nil

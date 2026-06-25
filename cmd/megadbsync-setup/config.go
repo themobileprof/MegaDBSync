@@ -7,7 +7,7 @@ var setupVersion = "dev"
 
 const (
 	productName      = "MegaDBSync"
-	defaultRepo      = "themobileprof/mdas"
+	defaultRepo      = "themobileprof/megadbsync"
 	defaultAsset     = "megadbsync.exe"
 	defaultInstallDir = `C:\MegaDBSync`
 	setupCopyName    = "MegaDBSync-Setup.exe"

@@ -636,15 +636,7 @@ func boolToInt(v bool) int {
 }
 
 func resolveDBPath(dataDir string) string {
-	primary := filepath.Join(dataDir, "megadbsync.db")
-	if _, err := os.Stat(primary); err == nil {
-		return primary
-	}
-	legacy := filepath.Join(dataDir, "mdas.db")
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy
-	}
-	return primary
+	return filepath.Join(dataDir, "megadbsync.db")
 }
 
 func osMkdir(dir string) error {
