@@ -85,12 +85,46 @@ func runInstall(opts setupOptions, existing installInfo, isUpgrade bool) {
 	fmt.Printf("  %s\n", filepath.Join(installDir, setupCopyName))
 	fmt.Printf("  Settings -> Apps -> %s\n", productName)
 
-	startNow := opts.forceStart || promptYesNo("Start MegaDBSync now?", true)
-	if startNow {
+	if opts.forceStart {
 		fmt.Println("\nStarting MegaDBSync...")
 		if err := launchApp(exePath, installDir, opts.addr, dataDir); err != nil {
 			fatal("start app: %v", err)
 		}
 		fmt.Println("MegaDBSync is running in a new window.")
+		return
+	}
+
+	if !isInteractive() {
+		return
+	}
+
+	for {
+		switch promptMenu("Select next action:", []string{
+			"Run",
+			"Reinstall-upgrade",
+			"Uninstall",
+			"Exit",
+		}) {
+		case 1:
+			fmt.Println("\nStarting MegaDBSync...")
+			if err := launchApp(exePath, installDir, opts.addr, dataDir); err != nil {
+				fatal("start app: %v", err)
+			}
+			fmt.Println("MegaDBSync is running in a new window.")
+			return
+		case 2:
+			next := opts
+			next.installDir = installDir
+			next.version = "latest"
+			runInstall(next, info, true)
+			return
+		case 3:
+			runUninstall(info)
+			return
+		case 4:
+			return
+		default:
+			return
+		}
 	}
 }

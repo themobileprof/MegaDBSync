@@ -36,6 +36,7 @@ Permanent builds are on **[GitHub Releases](https://github.com/themobileprof/mda
 .\megadbsync-setup.exe
 # Installs to C:\MegaDBSync, registers Windows uninstall, optional logon task.
 # Re-run the same file (or C:\MegaDBSync\MegaDBSync-Setup.exe) to upgrade or uninstall.
+# Interactive mode shows: Run / Reinstall-upgrade / Uninstall / Exit
 
 .\megadbsync-setup.exe -uninstall
 .\megadbsync-setup.exe -upgrade

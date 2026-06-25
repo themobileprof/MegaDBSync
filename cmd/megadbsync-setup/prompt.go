@@ -42,21 +42,32 @@ func promptMenu(title string, options []string) int {
 	if !isInteractive() {
 		return 0
 	}
-	fmt.Println()
-	fmt.Println(title)
-	for i, opt := range options {
-		fmt.Printf("  [%d] %s\n", i+1, opt)
+	for {
+		fmt.Println()
+		fmt.Println(title)
+		for i, opt := range options {
+			fmt.Printf("  [%d] %s\n", i+1, opt)
+		}
+		fmt.Print("Choice: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return 0
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+		if err != nil || n < 1 || n > len(options) {
+			fmt.Printf("Please enter a number from 1 to %d.\n", len(options))
+			continue
+		}
+		return n
 	}
-	fmt.Print("Choice: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return 0
+}
+
+func promptEnterToClose() {
+	if !isInteractive() {
+		return
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
-	if err != nil || n < 1 || n > len(options) {
-		return 0
-	}
-	return n
+	fmt.Print("\nPress Enter to close setup...")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 func fatal(format string, args ...any) {

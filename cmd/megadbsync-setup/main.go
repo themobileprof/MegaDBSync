@@ -23,7 +23,11 @@ func main() {
 	noAutostart := flag.Bool("no-autostart", false, "Do not create logon scheduled task")
 	autoEngine := flag.Bool("auto-start-engine", false, "Auto-start migration engine on first app launch")
 	noAutoEngine := flag.Bool("no-auto-start-engine", false, "Do not auto-start migration engine")
+	noPause := flag.Bool("no-pause", false, "Do not wait for Enter before closing in interactive mode")
 	flag.Parse()
+	if !*noPause {
+		defer promptEnterToClose()
+	}
 
 	opts := setupOptions{
 		installDir: *installDir,
